@@ -19,7 +19,11 @@ from .helpers import (
     edp_axis_label,
     order_config_labels,
 )
-from .style import PALETTE, FULL_WIDTH, HALF_WIDTH, NAVY, TEAL, STEEL, ICE
+from .style import (
+    PALETTE, FULL_WIDTH, HALF_WIDTH,
+    NAVY, TEAL, STEEL, ICE,
+    STATION_COLORS, CHARCOAL,
+)
 
 
 # ── HDI helper ────────────────────────────────────────────────────────
@@ -613,33 +617,54 @@ def plot_forest_arviz(
             lbls = (config_labels[:n_levels] if config_labels is not None
                     else [f"config[{i}]" for i in range(n_levels)])
 
-            # Raw data dots
-            raw_per_level = [None] * n_levels
+            # Raw data dots (colored by station)
+            raw_per_level = [None] * n_levels  # list of (values, station_indices)
             if observed_y is not None and config_idx is not None:
                 for k in range(n_levels):
                     mask = config_idx == k
                     if np.any(mask):
-                        raw_per_level[k] = observed_y[mask]
+                        raw_per_level[k] = (
+                            observed_y[mask],
+                            station_idx[mask] if station_idx is not None else None,
+                        )
+
+            # Build station color list
+            _sta_colors = list(STATION_COLORS.values())
+            _sta_labels_list = station_labels or []
 
             y = np.arange(n_levels)
 
-            # Layer 0: raw observations
+            # Layer 0: raw observations (colored by station)
+            _sta_legend_done = set()
             for k in range(n_levels):
                 if raw_per_level[k] is not None:
-                    pts = raw_per_level[k]
+                    pts, st_idx = raw_per_level[k]
                     jitter = np.random.default_rng(42 + k).uniform(
                         -0.18, 0.18, size=len(pts))
-                    ax.scatter(pts, y[k] + jitter, s=10, alpha=dot_alpha,
-                               color=STEEL, edgecolors="none", zorder=1,
-                               label=("observed" if k == 0 else None))
+                    if st_idx is not None:
+                        for s_val in np.unique(st_idx):
+                            s_mask = st_idx == s_val
+                            s_color = _sta_colors[s_val % len(_sta_colors)]
+                            s_label = (_sta_labels_list[s_val]
+                                       if s_val < len(_sta_labels_list) else f"sta_{s_val}")
+                            ax.scatter(
+                                pts[s_mask], y[k] + jitter[s_mask],
+                                s=10, alpha=dot_alpha, color=s_color,
+                                edgecolors="none", zorder=1,
+                                label=(s_label if s_val not in _sta_legend_done else None),
+                            )
+                            _sta_legend_done.add(s_val)
+                    else:
+                        ax.scatter(pts, y[k] + jitter, s=10, alpha=dot_alpha,
+                                   color=STEEL, edgecolors="none", zorder=1)
 
-            # Layer 1: predictive band (wide, light)
-            for k in range(n_levels):
-                ax.plot([pred_lo[k], pred_hi[k]], [y[k], y[k]],
-                        color=ICE, lw=4.0, solid_capstyle="round", zorder=2,
-                        label=(f"{int(ci*100)}% predictive" if k == 0 else None))
+            # Layer 1: predictive interval (thin black error bars)
+            ax.errorbar(med, y, xerr=[med - pred_lo, pred_hi - med],
+                        fmt="none", lw=0.8, capsize=2, capthick=0.8,
+                        color=CHARCOAL, zorder=2,
+                        label=f"{int(ci*100)}% predictive")
 
-            # Layer 2: mean HDI (tight, dark)
+            # Layer 2: mean HDI (thicker, navy)
             ax.errorbar(med, y, xerr=[med - lo_mean, hi_mean - med],
                         fmt="o", ms=4.0, lw=1.6, capsize=3, capthick=1.2,
                         color=NAVY, markeredgecolor="white",
@@ -647,11 +672,11 @@ def plot_forest_arviz(
                         label=f"{int(ci*100)}% mean HDI")
 
             ax.set_yticks(y)
-            ax.set_yticklabels(lbls, fontsize=7)
+            ax.set_yticklabels(lbls)
             ax.invert_yaxis()
             ax.set_xlabel("log EDP")
-            ax.set_title(r"$\mu_0 + \mu_{\mathrm{config}}$", fontsize=9)
-            ax.legend(fontsize=6, loc="lower right")
+            ax.set_title(r"$\mu_0 + \mu_{\mathrm{config}}$")
+            ax.legend(loc="lower right")
 
         # --- delta_st panel ---
         elif vn.startswith("delta_st"):
@@ -660,6 +685,16 @@ def plot_forest_arviz(
 
             lbls = (station_labels[:n_levels] if station_labels is not None
                     else [f"station[{i}]" for i in range(n_levels)])
+
+            # Predictive interval for station effects
+            pred_lo_st = np.copy(lo)
+            pred_hi_st = np.copy(hi)
+            if sigma_run_flat is not None:
+                for k in range(n_levels):
+                    sig_pred = sigma_run_flat  # station marginal spread
+                    pred_draws = flat[:, k] + np.random.default_rng(100 + k).normal(
+                        0, sig_pred)
+                    pred_lo_st[k], pred_hi_st[k] = _hdi(pred_draws, prob=ci)
 
             raw_per_level = [None] * n_levels
             if observed_y is not None and station_idx is not None:
@@ -682,6 +717,7 @@ def plot_forest_arviz(
                     else:
                         raw_per_level[k] = y_k - global_mean
 
+            _sta_colors = list(STATION_COLORS.values())
             y = np.arange(n_levels)
 
             for k in range(n_levels):
@@ -690,8 +726,15 @@ def plot_forest_arviz(
                     jitter = np.random.default_rng(42 + k).uniform(
                         -0.18, 0.18, size=len(pts))
                     ax.scatter(pts, y[k] + jitter, s=10, alpha=dot_alpha,
-                               color=STEEL, edgecolors="none", zorder=1)
+                               color=_sta_colors[k % len(_sta_colors)],
+                               edgecolors="none", zorder=1)
 
+            # Predictive interval (thin black)
+            ax.errorbar(med, y, xerr=[med - pred_lo_st, pred_hi_st - med],
+                        fmt="none", lw=0.8, capsize=2, capthick=0.8,
+                        color=CHARCOAL, zorder=2)
+
+            # Mean HDI (thick navy)
             ax.errorbar(med, y, xerr=[med - lo, hi - med],
                         fmt="o", ms=4.0, lw=1.6, capsize=3, capthick=1.2,
                         color=NAVY, markeredgecolor="white",
@@ -699,10 +742,10 @@ def plot_forest_arviz(
 
             ax.axvline(0, color="0.4", lw=0.7, ls="--", zorder=0)
             ax.set_yticks(y)
-            ax.set_yticklabels(lbls, fontsize=7)
+            ax.set_yticklabels(lbls)
             ax.invert_yaxis()
             ax.set_xlabel(r"$\delta_{\mathrm{station}}$ (log EDP)")
-            ax.set_title(r"$\delta_{\mathrm{station}}$", fontsize=9)
+            ax.set_title(r"$\delta_{\mathrm{station}}$")
 
         # --- generic fallback ---
         else:
@@ -721,15 +764,15 @@ def plot_forest_arviz(
                         color=NAVY, markeredgecolor="white",
                         markeredgewidth=0.4, zorder=4)
             ax.set_yticks(y)
-            ax.set_yticklabels(lbls, fontsize=7)
+            ax.set_yticklabels(lbls)
             ax.invert_yaxis()
             ax.set_xlabel("posterior value")
-            ax.set_title(vn, fontsize=9)
+            ax.set_title(vn)
 
         ax.grid(True, axis="x", alpha=0.25, lw=0.5, zorder=0)
 
     ci_pct = int(ci * 100)
-    fig.suptitle(f"Posterior {ci_pct}% HDI vs observed data", fontsize=9)
+    fig.suptitle(f"Posterior {ci_pct}% HDI vs observed data")
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, axes
