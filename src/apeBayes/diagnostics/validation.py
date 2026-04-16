@@ -1,13 +1,9 @@
-"""
-Posterior predictive checks and model validation.
-"""
+"""Posterior predictive checks and model validation."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-
-from ..utils import flatten_posterior
 
 
 def posterior_predictive_check(
@@ -17,7 +13,7 @@ def posterior_predictive_check(
     config_idx: np.ndarray | None = None,
     config_labels: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Basic posterior predictive check: compare observed vs replicated statistics.
+    """Compare observed vs replicated statistics for posterior predictive check.
 
     Parameters
     ----------

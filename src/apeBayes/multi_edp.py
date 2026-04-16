@@ -17,14 +17,12 @@ Usage
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from .config import ModelConfig
 from .facade import BayesEpistemicModel
-
 
 # ── EDP specification ────────────────────────────────────────────────────────
 
@@ -53,7 +51,7 @@ class EDPSpec:
         category: str = "general",
         story: int | None = None,
         direction: str | None = None,
-    ):
+    ) -> None:
         self.name = name
         self.column = column
         self.category = category
@@ -95,7 +93,7 @@ class MultiEDPModel:
         cfg: ModelConfig,
         *,
         name: str | None = None,
-    ):
+    ) -> None:
         if not edp_specs:
             raise ValueError("edp_specs must contain at least one EDPSpec.")
         self.df = df
@@ -106,10 +104,12 @@ class MultiEDPModel:
 
     @property
     def edp_names(self) -> list[str]:
+        """Return the list of EDP names."""
         return [s.name for s in self.edp_specs]
 
     @property
     def is_fitted(self) -> bool:
+        """Return True if all EDPs have been fitted."""
         return len(self.models) == len(self.edp_specs) and all(
             m.is_fitted for m in self.models.values()
         )
@@ -134,7 +134,7 @@ class MultiEDPModel:
             sampling=self.cfg.sampling,
         )
 
-    def fit(self, edp_name: str, **fit_kwargs) -> BayesEpistemicModel:
+    def fit(self, edp_name: str, **fit_kwargs: Any) -> BayesEpistemicModel:
         """Fit a single EDP.
 
         Parameters
@@ -155,7 +155,7 @@ class MultiEDPModel:
         self.models[spec.name] = model
         return model
 
-    def fit_all(self, **fit_kwargs) -> "MultiEDPModel":
+    def fit_all(self, **fit_kwargs: Any) -> MultiEDPModel:
         """Fit every EDP sequentially.  Returns self for chaining."""
         for spec in self.edp_specs:
             if spec.name not in self.models:
@@ -239,7 +239,7 @@ class MultiEDPModel:
 
     def compare_decomposition(
         self,
-        **kwargs,
+        **kwargs: Any,
     ) -> pd.DataFrame:
         """Axiswise decomposition table across all EDPs."""
         self._check_fitted()

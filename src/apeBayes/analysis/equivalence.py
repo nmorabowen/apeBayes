@@ -9,10 +9,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy.cluster.hierarchy import linkage, fcluster, leaves_list
+from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
 from scipy.spatial.distance import squareform
-
-from ..utils import EPS
 
 
 def equivalence_probability(
@@ -37,10 +35,7 @@ def equivalence_probability(
     subset_idx : optional index array for a subset of configs.
     """
     mu_full = mu_config  # (S, K)
-    if subset_idx is not None:
-        mu_sel = mu_full[:, subset_idx]
-    else:
-        mu_sel = mu_full
+    mu_sel = mu_full[:, subset_idx] if subset_idx is not None else mu_full
 
     dmu = mu_sel - mu_full[:, [ref_idx]]
     beta = dmu / sigma_run[:, None]
@@ -114,10 +109,7 @@ def epistemic_distance_matrix(
     -------
     (labels, D) where D is (M, M) symmetric, D_ii = 0.
     """
-    if subset_idx is not None:
-        mu_sel = mu_config[:, subset_idx]
-    else:
-        mu_sel = mu_config
+    mu_sel = mu_config[:, subset_idx] if subset_idx is not None else mu_config
 
     # Pairwise |Δμ| for each draw → (S, M, M)
     dmu = mu_sel[:, :, None] - mu_sel[:, None, :]

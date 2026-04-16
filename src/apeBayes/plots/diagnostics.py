@@ -1,17 +1,19 @@
-"""
-Convergence-diagnostic visualizations: R-hat bar, ESS bar.
-"""
+"""Convergence-diagnostic visualizations: R-hat bar, ESS bar."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
-from .helpers import savefig, ensure_dir
-from .style import PALETTE, HALF_WIDTH
+from .helpers import ensure_dir, savefig
+from .style import HALF_WIDTH, PALETTE
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pandas as pd
 
 
 def plot_rhat_bar(

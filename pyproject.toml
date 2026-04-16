@@ -56,7 +56,69 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP"]
+select = [
+    "E", "F", "W", "I", "UP",   # baseline (pycodestyle, pyflakes, isort, pyupgrade)
+    "ANN",                        # type-annotation enforcement
+    "D",                          # pydocstyle (numpy convention)
+    "B",                          # flake8-bugbear
+    "SIM",                        # flake8-simplify
+    "RUF",                        # ruff-specific
+    "TCH",                        # type-checking imports
+]
+ignore = [
+    "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
+    "D105",     # missing docstring in magic method
+    "D107",     # missing docstring in __init__
+    "RUF001",   # ambiguous unicode in string (Greek letters in math)
+    "RUF002",   # ambiguous unicode in docstring (Greek letters in math)
+    "RUF003",   # ambiguous unicode in comment (Greek letters in math)
+    "E741",     # ambiguous variable name (single-letter math vars: l, I, O)
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "D", "S101"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "pymc.*", "nutpie.*", "arviz.*", "seaborn.*", "pytensor.*",
+    "scipy.*", "xarray.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "apeBayes.diagnostics.convergence",
+    "apeBayes.model.sampling",
+    "apeBayes.model.comparison",
+    "apeBayes.model.random_slopes_interaction",
+    "apeBayes.plots.posterior",
+    "apeBayes.plots.bias",
+    "apeBayes.plots.variance",
+    "apeBayes.plots.interaction",
+    "apeBayes.plots.helpers",
+    "apeBayes.plots.style",
+    "apeBayes.posterior.accessor",
+    "apeBayes.analysis.equivalence",
+    "apeBayes.utils",
+]
+disable_error_code = [
+    "attr-defined", "call-arg", "no-any-return", "has-type",
+    "index", "var-annotated", "call-overload", "arg-type",
+    "misc", "union-attr", "assignment", "return-value",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

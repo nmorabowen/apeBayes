@@ -1,20 +1,23 @@
-"""
-Variance-budget visualizations: waterfall, lollipop components,
-decomposition bars, sigma stability.
+"""Variance-budget visualizations.
+
+Waterfall, lollipop components, decomposition bars, sigma stability.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import numpy as np
 
-from .helpers import savefig, ensure_dir, order_config_labels
-from .style import PALETTE, CMAP_DIV, FULL_WIDTH, HALF_WIDTH, VARIANCE_COLORS
+from .helpers import ensure_dir, order_config_labels, savefig
+from .style import FULL_WIDTH, HALF_WIDTH, PALETTE, VARIANCE_COLORS
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pandas as pd
 
 # ── Color mapping for variance components ─────────────────────────────────
 
@@ -81,7 +84,9 @@ def plot_variance_budget_waterfall(
             continue
         for prefix_str in ("Config spread", "Station spread", "Run dispersion", "Residual disp."):
             if prefix_str in n:
-                short_names.append(prefix_str.replace(" spread", "").replace(" dispersion", "").replace(" disp.", ""))
+                short = prefix_str.replace(" spread", "").replace(" dispersion", "")
+                short = short.replace(" disp.", "")
+                short_names.append(short)
                 break
         else:
             short_names.append(n[:12])
@@ -92,7 +97,7 @@ def plot_variance_budget_waterfall(
     x = np.arange(len(names))
     total = float(vals.sum())
 
-    for i, (name, val, pct) in enumerate(zip(short_names, vals, pcts)):
+    for i, (_name, val, pct) in enumerate(zip(short_names, vals, pcts, strict=False)):
         ax.bar(i, val, bottom=bottom, color=colors[i], edgecolor="white",
                lw=0.5, width=0.65)
         mid_y = bottom + val / 2
@@ -141,7 +146,7 @@ def plot_variance_budget_bars(
 
     fig, ax = plt.subplots(figsize=figsize)
     left = 0.0
-    for i, (comp, pct) in enumerate(zip(components, pcts)):
+    for i, (comp, pct) in enumerate(zip(components, pcts, strict=False)):
         ax.barh(0, pct, left=left, color=colors[i], edgecolor="white",
                 lw=0.4, label=comp, height=0.5)
         if pct > 5:
@@ -303,9 +308,9 @@ def plot_decomposition_bars(
 
     labels = df["component"].tolist()
     med = df["pct_med"].to_numpy(dtype=float)
-    lo = df["pct_lo"].to_numpy(dtype=float) if "pct_lo" in df.columns else med
-    hi = df["pct_hi"].to_numpy(dtype=float) if "pct_hi" in df.columns else med
-    x = np.arange(len(labels))
+    df["pct_lo"].to_numpy(dtype=float) if "pct_lo" in df.columns else med
+    df["pct_hi"].to_numpy(dtype=float) if "pct_hi" in df.columns else med
+    np.arange(len(labels))
     # Map SSI→station color, Nonlinearity→case color, interaction→interaction color
     decomp_colors = []
     for lbl in labels:
@@ -322,7 +327,7 @@ def plot_decomposition_bars(
     # Horizontal waterfall: stacked left-to-right
     left = 0.0
     y_pos = 0
-    for i, (lbl, val, pct) in enumerate(zip(labels, med, med)):
+    for i, (_lbl, val, _pct) in enumerate(zip(labels, med, med, strict=False)):
         ax.barh(y_pos, val, left=left, color=colors[i], edgecolor="white",
                 lw=0.5, height=0.55)
         # Label inside if wide enough, outside if not
@@ -402,16 +407,13 @@ def plot_sigma_stability(
     labels = order_config_labels(labels)
     # Reorder df_eps to match
     label_map = {}
-    for idx, c in zip(df_eps.index, df_eps["component"]):
-        if "[" in c and "]" in c:
-            lbl = c.split("[")[1].rstrip("]")
-        else:
-            lbl = c
+    for idx, c in zip(df_eps.index, df_eps["component"], strict=False):
+        lbl = c.split("[")[1].rstrip("]") if "[" in c and "]" in c else c
         label_map[lbl] = idx
     ordered_idx = [label_map[l] for l in labels]
     df_eps = df_eps.loc[ordered_idx].reset_index(drop=True)
 
-    x = np.arange(len(labels))
+    np.arange(len(labels))
     med = df_eps["med"].to_numpy(dtype=float)
     lo = df_eps["lo"].to_numpy(dtype=float)
     hi = df_eps["hi"].to_numpy(dtype=float)
@@ -541,7 +543,8 @@ def plot_level_rankings(
     axes[0].set_xlabel(f"Share of {factor_names[0]} main-effect energy (%)")
     axes[0].set_title(f"{factor_names[0]} ranking")
 
-    f1_col = [c for c in case_table.columns if c in (factor_names[1], "Nonlinearity", "Case", "Factor1")]
+    f1_candidates = (factor_names[1], "Nonlinearity", "Case", "Factor1")
+    f1_col = [c for c in case_table.columns if c in f1_candidates]
     f1_col = f1_col[0] if f1_col else case_table.columns[0]
     cv = case_table["share_pct_med"].to_numpy(dtype=float)
     cl = case_table["share_pct_lo"].to_numpy(dtype=float)
@@ -593,10 +596,7 @@ def plot_sigma_stability_triptych(
     sig = sigma_eps.copy()
     if nu is not None:
         t_factor = np.sqrt(nu / np.maximum(nu - 2.0, 1e-12))
-        if sig.ndim == 2:
-            sig = sig * t_factor[:, None]
-        else:
-            sig = sig * t_factor
+        sig = sig * t_factor[:, None] if sig.ndim == 2 else sig * t_factor
     if sig.ndim == 1:
         sig = np.repeat(sig[:, None], len(labels), axis=1)
 
@@ -609,10 +609,7 @@ def plot_sigma_stability_triptych(
     sig_ref = sig[:, ref_idx]
     p_le_ref = np.mean(sig <= sig_ref[:, None], axis=0)
 
-    if order_by == "stability":
-        ord_idx = np.argsort(med)
-    else:
-        ord_idx = np.arange(n)
+    ord_idx = np.argsort(med) if order_by == "stability" else np.arange(n)
 
     labels_ord = [labels[i] for i in ord_idx]
     sig_ord = sig[:, ord_idx]

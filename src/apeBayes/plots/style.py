@@ -6,12 +6,9 @@ Palette calibrated 2026-04-15 for protanopia.
 
 from __future__ import annotations
 
-from typing import Literal
-
 import matplotlib as mpl
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import numpy as np
+import matplotlib.pyplot as plt
 
 # -- Named colours -------------------------------------------------------------
 

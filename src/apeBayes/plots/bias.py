@@ -1,30 +1,28 @@
-"""
-Bias visualizations: triptych heatmaps, forest plots, probability bars.
-"""
+"""Bias visualizations: triptych heatmaps, forest plots, probability bars."""
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .helpers import (
-    add_tier_case_columns,
-    order_config_labels,
-    pivot_tier_case,
-    symmetric_bounds,
-    safe_log_pos,
-    savefig,
-    ensure_dir,
     case_color,
     case_colors_for_labels,
+    ensure_dir,
+    order_config_labels,
+    pivot_tier_case,
+    safe_log_pos,
+    savefig,
+    symmetric_bounds,
 )
-from .style import CMAP_DIV, PALETTE, FULL_WIDTH, HALF_WIDTH
+from .style import CMAP_DIV, FULL_WIDTH, HALF_WIDTH, PALETTE
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # -- mu triptych -------------------------------------------------------------
 
@@ -354,8 +352,9 @@ def plot_standardized_bias(
     prefix: str = "",
     filename: str = "standardized_bias.pdf",
 ) -> tuple[plt.Figure, np.ndarray]:
-    """Layered standardised-bias plot with posterior density, raw dots,
-    X markers, and credible intervals.
+    """Plot layered standardised-bias with posterior density and raw dots.
+
+    Includes X markers and credible intervals.
 
     Parameters
     ----------
@@ -478,7 +477,7 @@ def _draw_bias_panel(
 
     # Layer 1: posterior density overlay
     if posterior_style != "none" and beta_draws is not None and beta_labels is not None:
-        label_to_y = {lbl: yi for lbl, yi in zip(labels, y)}
+        label_to_y = {lbl: yi for lbl, yi in zip(labels, y, strict=False)}
 
         # Pre-compute all KDEs so we can normalise consistently
         kdes: list[tuple[int, float, np.ndarray, np.ndarray]] = []
@@ -533,7 +532,7 @@ def _draw_bias_panel(
 
     # Layer 2: raw per-runkey dots
     if raw_dots is not None and raw_labels is not None:
-        label_to_y = {lbl: yi for lbl, yi in zip(labels, y)}
+        label_to_y = {lbl: yi for lbl, yi in zip(labels, y, strict=False)}
         for i, rl in enumerate(raw_labels):
             if rl in label_to_y:
                 yi = label_to_y[rl]
@@ -590,7 +589,7 @@ def plot_radar_bias_probability(
     N = len(labels)
     angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
     vals_closed = np.concatenate([vals, vals[:1]])
-    angles_closed = angles + [angles[0]]
+    angles_closed = [*angles, angles[0]]
 
     fig, ax = plt.subplots(figsize=figsize, subplot_kw={"projection": "polar"})
     spoke_colors = case_colors_for_labels(labels)

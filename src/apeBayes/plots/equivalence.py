@@ -1,20 +1,21 @@
-"""
-Equivalence visualizations: probability matrices, dendrograms, α-sweeps.
-"""
+"""Equivalence visualizations: probability matrices, dendrograms, α-sweeps."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.cluster.hierarchy import linkage, dendrogram, set_link_color_palette
+from scipy.cluster.hierarchy import dendrogram, linkage, set_link_color_palette
 from scipy.spatial.distance import squareform
 
-from .helpers import savefig, ensure_dir, order_config_labels, case_color, case_colors_for_labels
-from .style import CMAP_SEQ, CMAP_DIV, PALETTE, FULL_WIDTH, HALF_WIDTH
+from .helpers import case_color, case_colors_for_labels, ensure_dir, order_config_labels, savefig
+from .style import CMAP_SEQ, FULL_WIDTH, HALF_WIDTH, PALETTE
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def plot_equivalence_matrix(
@@ -103,7 +104,7 @@ def plot_equivalence_sweep(
     fig, ax = plt.subplots(figsize=figsize)
 
     configs = sweep_df[label_col].unique()
-    for i, cfg in enumerate(configs):
+    for cfg in configs:
         sub = sweep_df[sweep_df[label_col] == cfg].sort_values("alpha")
         ax.plot(sub["alpha"], sub["P_equiv"],
                 label=cfg, color=case_color(cfg), lw=1.4)
@@ -199,7 +200,7 @@ def plot_equivalence_bars_plus_sweep(
     prefix: str = "",
     filename: str = "equivalence_bars_sweep.pdf",
 ) -> tuple[plt.Figure, np.ndarray]:
-    """Combined bar chart (P_equiv at fixed α) + sweep lines (P vs α).
+    """Plot combined bar chart and sweep lines for equivalence.
 
     Parameters
     ----------
@@ -253,7 +254,7 @@ def plot_equivalence_bars_plus_sweep(
     # ── Right: sweep lines ──
     ax2 = axes[1]
     configs = order_config_labels(sweep_df[label_col].unique().tolist())
-    for i, cfg in enumerate(configs):
+    for cfg in configs:
         sub = sweep_df[sweep_df[label_col] == cfg].sort_values("alpha")
         ax2.plot(sub["alpha"], sub["P_equiv"],
                  label=cfg, color=case_color(cfg), lw=1.2)

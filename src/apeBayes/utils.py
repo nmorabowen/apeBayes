@@ -15,7 +15,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-
 # ── Named constants ─────────────────────────────────────────────────────────
 
 EPS = 1e-12          # safe-division / log-clipping epsilon
@@ -58,6 +57,7 @@ class DrawSummary:
     hi: float
 
     def as_dict(self, prefix: str = "") -> dict[str, float]:
+        """Return summary as a dictionary with optional key prefix."""
         return {
             f"{prefix}med": self.median,
             f"{prefix}lo": self.lo,
@@ -98,7 +98,7 @@ def summarize_draws(
 
     return np.array([
         DrawSummary(float(m), float(l), float(h))
-        for m, l, h in zip(np.atleast_1d(med), np.atleast_1d(lo), np.atleast_1d(hi))
+        for m, l, h in zip(np.atleast_1d(med), np.atleast_1d(lo), np.atleast_1d(hi), strict=False)
     ])
 
 

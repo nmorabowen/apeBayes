@@ -44,12 +44,16 @@ Implementation:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pymc as pm
 
-from ..config import ModelConfig
-from ..data import EpistemicDataset
 from .random_slopes import RandomSlopesModel
+
+if TYPE_CHECKING:
+    from ..config import ModelConfig
+    from ..data import EpistemicDataset
 
 
 class RandomSlopesInteractionModel(RandomSlopesModel):
@@ -84,7 +88,7 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         heteroskedastic: bool | None = None,
         interaction_loading: bool = False,
         sigma_xi: float = 0.5,
-    ):
+    ) -> None:
         super().__init__(
             sigma_lambda=sigma_lambda,
             centered_runs=centered_runs,
@@ -97,6 +101,7 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
 
     @property
     def description(self) -> str:
+        """Return a human-readable description of the model variant."""
         base = super().description
         tag = f"RandomSlopesInteraction(σ_γ={self._sigma_inter}"
         if self._interaction_loading:
@@ -119,7 +124,7 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         )
 
         # ── Case-level mapping ──────────────────────────────────────────
-        case_levels, config_to_case, case_idx_obs, ref_case_idx = (
+        case_levels, _config_to_case, case_idx_obs, ref_case_idx = (
             self._build_case_mapping(data, cfg)
         )
         n_cases = len(case_levels)
@@ -218,7 +223,7 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
 
             # ── Station × Rupture interaction (sum-to-zero, non-centered) ─
             sigma_inter = pm.HalfNormal("sigma_inter", sigma=self._sigma_inter)
-            n_inter_free = n_inter - 1
+            n_inter - 1
             z_inter_free = pm.Normal(
                 "z_inter_free", mu=0.0, sigma=1.0, dims="StationRun_free",
             )

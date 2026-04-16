@@ -14,11 +14,13 @@ Supports:
 
 from __future__ import annotations
 
-import numpy as np
+from typing import TYPE_CHECKING
+
 import pymc as pm
 
-from ..config import ModelConfig
-from ..data import EpistemicDataset
+if TYPE_CHECKING:
+    from ..config import ModelConfig
+    from ..data import EpistemicDataset
 
 
 class FlatConfigModel:
@@ -37,12 +39,13 @@ class FlatConfigModel:
         *,
         likelihood: str | None = None,
         heteroskedastic: bool | None = None,
-    ):
+    ) -> None:
         self._likelihood_override = likelihood
         self._hetero_override = heteroskedastic
 
     @property
     def description(self) -> str:
+        """Return a human-readable description of the model variant."""
         parts = []
         lik = self._likelihood_override or "config"
         het = self._hetero_override

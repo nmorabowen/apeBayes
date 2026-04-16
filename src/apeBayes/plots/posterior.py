@@ -1,30 +1,36 @@
-"""
-Posterior density / CDF overlays, PPC, and trace diagnostics.
-"""
+"""Posterior density / CDF overlays, PPC, and trace diagnostics."""
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .helpers import (
-    savefig,
-    ensure_dir,
-    to_edp_scale,
     edp_axis_label,
+    ensure_dir,
     order_config_labels,
+    savefig,
+    to_edp_scale,
 )
 from .style import (
-    PALETTE, FULL_WIDTH, HALF_WIDTH,
-    NAVY, TEAL, STEEL, ICE,
-    STATION_COLORS, CHARCOAL,
+    CHARCOAL,
+    FULL_WIDTH,
+    HALF_WIDTH,
+    NAVY,
+    PALETTE,
+    STATION_COLORS,
+    STEEL,
+    TEAL,
 )
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from arviz import InferenceData
 
 # ── HDI helper ────────────────────────────────────────────────────────
 
@@ -381,7 +387,7 @@ def plot_raw_data(
     data_by_config = [df[df["Config"] == c]["y"].to_numpy() for c in label_order]
     bp = ax2.boxplot(data_by_config, labels=label_order, patch_artist=True,
                      widths=0.5, medianprops={"color": "0.2", "lw": 1.2})
-    for patch, color_idx in zip(bp["boxes"], range(len(label_order))):
+    for patch, color_idx in zip(bp["boxes"], range(len(label_order)), strict=False):
         patch.set_facecolor(PALETTE[color_idx % len(PALETTE)])
         patch.set_alpha(0.5)
     ax2.set_xticklabels(label_order, rotation=45, ha="right", fontsize=7)
@@ -437,7 +443,7 @@ def plot_ppc_density(
 # ── ArviZ diagnostic wrappers ────────────────────────────────────────
 
 def plot_trace(
-    idata,
+    idata: InferenceData,
     *,
     var_names: list[str] | None = None,
     figsize: tuple[float, float] | None = None,
@@ -460,7 +466,7 @@ def plot_trace(
 
 
 def plot_pair(
-    idata,
+    idata: InferenceData,
     *,
     var_names: list[str] | None = None,
     figsize: tuple[float, float] | None = (HALF_WIDTH, HALF_WIDTH),
@@ -489,7 +495,7 @@ def plot_pair(
 
 
 def plot_forest_arviz(
-    idata,
+    idata: InferenceData,
     *,
     var_names: list[str] | None = None,
     observed_y: np.ndarray | None = None,
@@ -531,8 +537,9 @@ def plot_forest_arviz(
     ci : float
         Credible interval width (default 0.94 = 94% HDI).
     """
-    from ..utils import flatten_posterior
     from scipy.stats import norm as _norm
+
+    from ..utils import flatten_posterior
 
     out_dir = ensure_dir(out_dir)
 
@@ -580,7 +587,7 @@ def plot_forest_arviz(
     axes = axes.ravel()
 
     # Quantile for predictive band
-    z_ci = _norm.ppf(0.5 + ci / 2)
+    _norm.ppf(0.5 + ci / 2)
 
     for panel_idx, vn in enumerate(var_names):
         ax = axes[panel_idx]
@@ -593,10 +600,7 @@ def plot_forest_arviz(
 
         # --- mu_config panel: full predictive ---
         if vn.startswith("mu_config"):
-            if mu0_flat is not None:
-                flat_mean = flat + mu0_flat[:, None]  # (S, K)
-            else:
-                flat_mean = flat
+            flat_mean = flat + mu0_flat[:, None] if mu0_flat is not None else flat
 
             med = np.median(flat_mean, axis=0)
             lo_mean, hi_mean = _hdi_vec(flat_mean, prob=ci)
@@ -607,10 +611,7 @@ def plot_forest_arviz(
             if sigma_run_flat is not None:
                 for k in range(n_levels):
                     if sigma_eps_flat is not None:
-                        if sigma_eps_flat.ndim == 2:
-                            sig_e = sigma_eps_flat[:, k]
-                        else:
-                            sig_e = sigma_eps_flat
+                        sig_e = sigma_eps_flat[:, k] if sigma_eps_flat.ndim == 2 else sigma_eps_flat
                     else:
                         sig_e = np.zeros_like(sigma_run_flat)
                     sig_pred = np.sqrt(sigma_run_flat**2 + sig_e**2)
@@ -713,7 +714,7 @@ def plot_forest_arviz(
                         cf_k = config_idx[mask]
                         rn_k = run_idx[mask]
                         cells = {}
-                        for yi, ci_val, ri in zip(y_k, cf_k, rn_k):
+                        for yi, ci_val, ri in zip(y_k, cf_k, rn_k, strict=False):
                             key = (ci_val, ri)
                             cells.setdefault(key, []).append(yi)
                         raw_per_level[k] = np.array(

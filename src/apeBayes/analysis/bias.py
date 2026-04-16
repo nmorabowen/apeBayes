@@ -12,7 +12,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from ..utils import EPS, student_t_sd_factor
+from ..utils import student_t_sd_factor
 
 
 def standardized_bias(
@@ -51,10 +51,7 @@ def standardized_bias(
     pd.DataFrame
         Columns: Config, std_bias_{med,lo,hi}, dmu_{med,lo,hi}, mult_{med,lo,hi}.
     """
-    if subset_idx is not None:
-        mu_sub = mu_config[:, subset_idx]
-    else:
-        mu_sub = mu_config
+    mu_sub = mu_config[:, subset_idx] if subset_idx is not None else mu_config
 
     dmu = mu_sub - mu_config[:, [ref_idx]]         # (S, M)
     beta = dmu / sigma_run[:, None]                 # (S, M)
@@ -153,10 +150,7 @@ def bias_probability(
     - "within_equiv" : P(|β| < alpha_equiv)
     - "positive"     : P(β > 0)
     """
-    if subset_idx is not None:
-        mu_sub = mu_config[:, subset_idx]
-    else:
-        mu_sub = mu_config
+    mu_sub = mu_config[:, subset_idx] if subset_idx is not None else mu_config
 
     dmu = mu_sub - mu_config[:, [ref_idx]]
     beta = dmu / sigma_run[:, None]

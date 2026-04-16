@@ -1,17 +1,12 @@
-"""
-MCMC convergence diagnostics: R-hat, ESS, divergences.
-"""
+"""MCMC convergence diagnostics: R-hat, ESS, divergences."""
 
 from __future__ import annotations
 
 from typing import Literal
 
 import arviz as az
-import numpy as np
 import pandas as pd
 from arviz import InferenceData
-
-from ..utils import RHAT_THRESHOLD, ESS_THRESHOLD
 
 
 def diagnostics_summary(

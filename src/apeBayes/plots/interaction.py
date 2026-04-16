@@ -21,14 +21,16 @@ All functions return (fig, ax/axes) and optionally save to ``out_dir``.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
-from .helpers import savefig, ensure_dir, symmetric_bounds
-from .style import CMAP_DIV, PALETTE, FULL_WIDTH, HALF_WIDTH
+from .helpers import ensure_dir, savefig, symmetric_bounds
+from .style import CMAP_DIV, FULL_WIDTH, HALF_WIDTH, PALETTE
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Utilities ───────────────────────────────────────────────────────────
 
@@ -160,10 +162,7 @@ def plot_interaction_by_case(
     gamma_med_mat = _gamma_matrix(gamma_sr_draws, n_st, n_rk)
 
     # Per-Case loadings
-    if xi_case_draws is None:
-        xi_med = np.ones(n_cases)
-    else:
-        xi_med = np.median(xi_case_draws, axis=0)
+    xi_med = np.ones(n_cases) if xi_case_draws is None else np.median(xi_case_draws, axis=0)
 
     panels = [xi_med[c] * gamma_med_mat for c in range(n_cases)]
 

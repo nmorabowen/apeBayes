@@ -21,7 +21,6 @@ import pandas as pd
 
 from ..utils import EPS
 
-
 # ── 2-factor decomposition ──────────────────────────────────────────────────
 
 def axiswise_decomposition_draws(
@@ -156,7 +155,10 @@ def axiswise_table(
     rows = [
         _row(f"{factor_names[0]} (main)", var_tau, var_tau / denom, pct_tau),
         _row(f"{factor_names[1]} (main)", var_kappa, var_kappa / denom, pct_kappa),
-        _row(f"{factor_names[0]}×{factor_names[1]} interaction", var_gamma, var_gamma / denom, pct_gamma),
+        _row(
+            f"{factor_names[0]}×{factor_names[1]} interaction",
+            var_gamma, var_gamma / denom, pct_gamma,
+        ),
     ]
 
     return pd.DataFrame(rows)
@@ -207,7 +209,9 @@ def level_ranking_tables(
         f0_rows.append({
             factor_names[0]: lbl,
             "effect_med": t_med, "effect_lo": t_lo, "effect_hi": t_hi,
-            "share_pct_med": 100.0 * w_med, "share_pct_lo": 100.0 * w_lo, "share_pct_hi": 100.0 * w_hi,
+            "share_pct_med": 100.0 * w_med,
+            "share_pct_lo": 100.0 * w_lo,
+            "share_pct_hi": 100.0 * w_hi,
         })
 
     f1_rows = []
@@ -217,7 +221,9 @@ def level_ranking_tables(
         f1_rows.append({
             factor_names[1]: lbl,
             "effect_med": k_med, "effect_lo": k_lo, "effect_hi": k_hi,
-            "share_pct_med": 100.0 * w_med, "share_pct_lo": 100.0 * w_lo, "share_pct_hi": 100.0 * w_hi,
+            "share_pct_med": 100.0 * w_med,
+            "share_pct_lo": 100.0 * w_lo,
+            "share_pct_hi": 100.0 * w_hi,
         })
 
     # Spreads

@@ -11,36 +11,44 @@ Quick start
 
 from __future__ import annotations
 
-from .config import ModelConfig, PriorConfig, SamplingConfig, FactorSpec
+from .config import FactorSpec, ModelConfig, PriorConfig, SamplingConfig
 from .data import EpistemicDataset, encode_dataset
 from .facade import BayesEpistemicModel
-from .model import FlatConfigModel, HierarchicalConfigModel, RandomSlopesModel, RandomSlopesInteractionModel, ModelBuilder, sample_model, compare_models
-from .multi_edp import MultiEDPModel, EDPSpec
+from .model import (
+    FlatConfigModel,
+    HierarchicalConfigModel,
+    ModelBuilder,
+    RandomSlopesInteractionModel,
+    RandomSlopesModel,
+    compare_models,
+    sample_model,
+)
+from .multi_edp import EDPSpec, MultiEDPModel
 from .posterior import PosteriorAccessor
 
 __all__ = [
     # Main entry points
     "BayesEpistemicModel",
-    "MultiEDPModel",
     "EDPSpec",
-    # Configuration
-    "ModelConfig",
-    "PriorConfig",
-    "SamplingConfig",
-    "FactorSpec",
     # Data
     "EpistemicDataset",
-    "encode_dataset",
+    "FactorSpec",
     # Model building
     "FlatConfigModel",
     "HierarchicalConfigModel",
-    "RandomSlopesModel",
-    "RandomSlopesInteractionModel",
     "ModelBuilder",
-    "sample_model",
-    "compare_models",
+    # Configuration
+    "ModelConfig",
+    "MultiEDPModel",
     # Posterior
     "PosteriorAccessor",
+    "PriorConfig",
+    "RandomSlopesInteractionModel",
+    "RandomSlopesModel",
+    "SamplingConfig",
+    "compare_models",
+    "encode_dataset",
+    "sample_model",
 ]
 
 __version__ = "0.2.0"

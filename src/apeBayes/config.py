@@ -13,7 +13,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 # ── Epistemic factor ────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -157,10 +156,12 @@ class ModelConfig:
 
     @property
     def ci_lo(self) -> float:
+        """Return the lower credible-interval quantile."""
         return self.ci[0]
 
     @property
     def ci_hi(self) -> float:
+        """Return the upper credible-interval quantile."""
         return self.ci[1]
 
     @property
@@ -179,4 +180,5 @@ class ModelConfig:
         if not (0 < self.ci[0] < self.ci[1] < 1):
             raise ValueError(f"ci must satisfy 0 < lo < hi < 1, got {self.ci}")
         if self.likelihood not in ("student_t", "gaussian"):
-            raise ValueError(f"likelihood must be 'student_t' or 'gaussian', got {self.likelihood!r}")
+            msg = f"likelihood must be 'student_t' or 'gaussian', got {self.likelihood!r}"
+            raise ValueError(msg)

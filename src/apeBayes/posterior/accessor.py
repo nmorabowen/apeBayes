@@ -8,14 +8,15 @@ No more _post() vs _stack_samples_2d() confusion.
 
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING
 
-import numpy as np
-from arviz import InferenceData
+from ..utils import flatten_posterior, student_t_sd_factor
 
-from ..data import EpistemicDataset
-from ..utils import flatten_posterior, student_t_var_factor, student_t_sd_factor
+if TYPE_CHECKING:
+    import numpy as np
+    from arviz import InferenceData
+
+    from ..data import EpistemicDataset
 
 
 class PosteriorAccessor:
@@ -36,10 +37,12 @@ class PosteriorAccessor:
 
     @property
     def idata(self) -> InferenceData:
+        """Return the underlying ArviZ InferenceData."""
         return self._idata
 
     @property
     def data(self) -> EpistemicDataset:
+        """Return the encoded dataset."""
         return self._data
 
     @property
@@ -147,10 +150,12 @@ class PosteriorAccessor:
 
     @property
     def has_interaction(self) -> bool:
+        """Return True if posterior contains station-rupture interaction."""
         return self.has_var("gamma_sr")
 
     @property
     def has_interaction_loading(self) -> bool:
+        """Return True if posterior contains case interaction loadings."""
         return self.has_var("xi_case")
 
     @property
@@ -199,18 +204,22 @@ class PosteriorAccessor:
 
     @property
     def is_heteroskedastic(self) -> bool:
+        """Return True if the model uses per-configuration residual scale."""
         return self.has_var("sigma_eps_config")
 
     @property
     def is_student_t(self) -> bool:
+        """Return True if the model uses a Student-t likelihood."""
         return self.has_var("nu_minus2")
 
     # ── Posterior predictive ─────────────────────────────────────────────
 
     def has_posterior_predictive(self) -> bool:
+        """Return True if posterior predictive samples are available."""
         return hasattr(self._idata, "posterior_predictive")
 
     def has_prior_predictive(self) -> bool:
+        """Return True if prior predictive samples are available."""
         return hasattr(self._idata, "prior_predictive")
 
     def y_rep(self) -> np.ndarray | None:
@@ -226,20 +235,25 @@ class PosteriorAccessor:
 
     @property
     def config_labels(self) -> list[str]:
+        """Return configuration labels as a list."""
         return self._data.config_labels.tolist()
 
     @property
     def station_labels(self) -> list[str]:
+        """Return station labels as a list."""
         return self._data.station_labels.tolist()
 
     @property
     def run_labels(self) -> list[str]:
+        """Return run labels as a list."""
         return self._data.run_labels.tolist()
 
     @property
     def ref_idx(self) -> int:
+        """Return the index of the reference configuration."""
         return self._data.ref_idx
 
     @property
     def ref_label(self) -> str:
+        """Return the label of the reference configuration."""
         return self._data.ref_label

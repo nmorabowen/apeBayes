@@ -9,16 +9,17 @@ level labels consumed by every downstream module.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from itertools import product
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
-from .config import ModelConfig, FactorSpec
 from .utils import order_config_labels
 
+if TYPE_CHECKING:
+    from .config import ModelConfig
 
 # ── Public dataclass ────────────────────────────────────────────────────────
 
@@ -80,6 +81,7 @@ class EpistemicDataset:
 
     @property
     def ref_label(self) -> str:
+        """Return the label of the reference configuration."""
         return str(self.config_labels[self.ref_idx])
 
     def config_label_to_idx(self, label: str) -> int:
@@ -163,7 +165,7 @@ def encode_dataset(df: pd.DataFrame, cfg: ModelConfig) -> EpistemicDataset:
     df = df.copy()  # never mutate the caller's frame
 
     # ── validate required columns ────────────────────────────────────────
-    required = [cfg.edp_col, cfg.station_col, cfg.run_col] + cfg.factor_columns
+    required = [cfg.edp_col, cfg.station_col, cfg.run_col, *cfg.factor_columns]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns in DataFrame: {missing}")
@@ -216,7 +218,7 @@ def encode_dataset(df: pd.DataFrame, cfg: ModelConfig) -> EpistemicDataset:
         row_config = df[cfg.config_col].astype(str).to_numpy()
     else:
         factor_cols = [df[f.column].astype(str) for f in cfg.factors]
-        row_config = np.array([sep.join(parts) for parts in zip(*factor_cols)])
+        row_config = np.array([sep.join(parts) for parts in zip(*factor_cols, strict=False)])
 
     label_to_idx = {lbl: i for i, lbl in enumerate(flat_labels)}
     config_idx = np.array([label_to_idx.get(lbl, -1) for lbl in row_config], dtype=int)

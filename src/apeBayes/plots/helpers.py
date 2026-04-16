@@ -1,17 +1,16 @@
-"""
-Plotting helper utilities — file I/O, label parsing, layout tools.
-"""
+"""Plotting helper utilities — file I/O, label parsing, layout tools."""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
+if TYPE_CHECKING:
+    import pandas as pd
 
 # ── File helpers ────────────────────────────────────────────────────────
 
@@ -57,7 +56,7 @@ def parse_tier_case(label: str) -> tuple[int, str] | None:
 
 def case_color(label: str, fallback: str = "#3C3C3C") -> str:
     """Return the CASE_COLORS colour for a config label like '4D' → 'D' → SAGE."""
-    from .style import CASE_COLORS, CHARCOAL
+    from .style import CASE_COLORS
     tc = parse_tier_case(str(label))
     if tc is None:
         return fallback
@@ -96,15 +95,14 @@ def order_config_labels(
     if by == "input":
         return list(labels)
 
-    def _key(lbl: str):
+    def _key(lbl: str) -> tuple[int, int | str, str | int, str]:
         parsed = parse_tier_case(lbl)
         if parsed is None:
             return (1, 999, "~", lbl)
         tier, case = parsed
         if by == "tier":
             return (0, tier, case.upper(), lbl)
-        else:  # case
-            return (0, case.upper(), tier, lbl)
+        return (0, case.upper(), tier, lbl)
 
     return sorted(labels, key=_key)
 
@@ -149,4 +147,5 @@ def to_edp_scale(x: Any, original: bool) -> np.ndarray:
 
 
 def edp_axis_label(original: bool) -> str:
+    """Return y-axis label appropriate for original or log EDP scale."""
     return "EDP" if original else "log EDP"

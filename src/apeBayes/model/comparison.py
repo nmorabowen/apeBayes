@@ -7,17 +7,22 @@ a ranked comparison table.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import arviz as az
-import pandas as pd
 from arviz import InferenceData
 
-from ..config import ModelConfig
-from ..data import EpistemicDataset
-from .base import ModelBuilder
 from .sampling import sample_model
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    import pandas as pd
+
+    from ..config import ModelConfig
+    from ..data import EpistemicDataset
+    from .base import ModelBuilder
 
 
 @dataclass
@@ -32,7 +37,7 @@ class FittedVariant:
 
 def compare_models(
     data: EpistemicDataset,
-    variants: dict[str, ModelBuilder],
+    variants: Mapping[str, ModelBuilder],
     cfg: ModelConfig,
     *,
     ic: str = "loo",

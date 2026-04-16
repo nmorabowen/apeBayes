@@ -7,13 +7,13 @@ whose posterior contains the expected variable names.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-import pymc as pm
+if TYPE_CHECKING:
+    import pymc as pm
 
-from ..config import ModelConfig
-from ..data import EpistemicDataset
-
+    from ..config import ModelConfig
+    from ..data import EpistemicDataset
 
 # ── Expected posterior variable names ───────────────────────────────────────
 # Every model builder must produce these in the pm.Model trace.

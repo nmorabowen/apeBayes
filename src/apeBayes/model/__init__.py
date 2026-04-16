@@ -1,19 +1,19 @@
 """Model specification, sampling, and comparison."""
 
 from .base import ModelBuilder
+from .comparison import compare_models
 from .flat import FlatConfigModel
 from .hierarchical import HierarchicalConfigModel
 from .random_slopes import RandomSlopesModel
 from .random_slopes_interaction import RandomSlopesInteractionModel
 from .sampling import sample_model
-from .comparison import compare_models
 
 __all__ = [
-    "ModelBuilder",
     "FlatConfigModel",
     "HierarchicalConfigModel",
-    "RandomSlopesModel",
+    "ModelBuilder",
     "RandomSlopesInteractionModel",
-    "sample_model",
+    "RandomSlopesModel",
     "compare_models",
+    "sample_model",
 ]

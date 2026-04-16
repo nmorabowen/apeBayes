@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import logging
 import warnings
+from typing import TYPE_CHECKING
 
 import pymc as pm
-from arviz import InferenceData
 
-from ..config import SamplingConfig
+if TYPE_CHECKING:
+    from arviz import InferenceData
+
+    from ..config import SamplingConfig
 
 logger = logging.getLogger(__name__)
 

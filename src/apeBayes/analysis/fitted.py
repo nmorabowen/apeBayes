@@ -1,13 +1,9 @@
-"""
-Fitted values and R² computation.
-"""
+"""Fitted values and R² computation."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-
-from ..utils import EPS
 
 
 def posterior_mean_fitted(
@@ -63,7 +59,7 @@ def posterior_r2(
     R²_marginal    : variance explained by fixed effects (config + station)
     R²_conditional : variance explained by fixed + random effects
     """
-    S = mu0.shape[0]
+    mu0.shape[0]
     var_y = np.var(y, ddof=1)
 
     # Broadcast: (S, N)
@@ -100,7 +96,7 @@ def mu_hat_table(
     *,
     subset_idx: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Configuration intercepts (mu0 + mu_config) with posterior summaries."""
+    """Compute configuration intercepts with posterior summaries."""
     if subset_idx is not None:
         mu_sub = mu0[:, None] + mu_config[:, subset_idx]
     else:

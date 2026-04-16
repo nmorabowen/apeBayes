@@ -35,11 +35,14 @@ Run parameterization:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pymc as pm
 
-from ..config import ModelConfig
-from ..data import EpistemicDataset
+if TYPE_CHECKING:
+    from ..config import ModelConfig
+    from ..data import EpistemicDataset
 
 
 class RandomSlopesModel:
@@ -70,7 +73,7 @@ class RandomSlopesModel:
         centered_runs: bool = False,
         likelihood: str | None = None,
         heteroskedastic: bool | None = None,
-    ):
+    ) -> None:
         if sigma_lambda <= 0:
             raise ValueError(f"sigma_lambda must be positive, got {sigma_lambda}")
         self._sigma_lambda = sigma_lambda
@@ -80,6 +83,7 @@ class RandomSlopesModel:
 
     @property
     def description(self) -> str:
+        """Return a human-readable description of the model variant."""
         parts = [f"σ_λ={self._sigma_lambda}"]
         if self._centered_runs:
             parts.append("centered")
@@ -117,7 +121,7 @@ class RandomSlopesModel:
         # Factor[1] is Nonlinearity / Case
         case_factor = cfg.factors[1]
         case_levels = data.factor_levels[case_factor.name]
-        n_cases = len(case_levels)
+        len(case_levels)
         case_level_to_idx = {c: i for i, c in enumerate(case_levels)}
 
         # Map each config to its Case
@@ -158,7 +162,7 @@ class RandomSlopesModel:
         )
 
         # ── Case-level mapping ──────────────────────────────────────────
-        case_levels, config_to_case, case_idx_obs, ref_case_idx = (
+        case_levels, _config_to_case, case_idx_obs, ref_case_idx = (
             self._build_case_mapping(data, cfg)
         )
         n_cases = len(case_levels)

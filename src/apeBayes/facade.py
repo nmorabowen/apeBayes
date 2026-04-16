@@ -9,26 +9,29 @@ independently usable.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
-from arviz import InferenceData
 
-from .config import ModelConfig, PriorConfig, SamplingConfig, FactorSpec
+from .analysis import bias, decomposition, equivalence, fitted, variance
+from .config import ModelConfig
 from .data import EpistemicDataset, encode_dataset
-from .model.flat import FlatConfigModel
-from .model.sampling import sample_model
-from .model.comparison import compare_models, FittedVariant
-from .posterior.accessor import PosteriorAccessor
-from .analysis import bias, variance, decomposition, equivalence, fitted
 from .diagnostics.convergence import (
     diagnostics_summary,
     divergences_count,
-    rhat_table,
     ess_table,
+    rhat_table,
 )
 from .diagnostics.validation import posterior_predictive_check
+from .model.comparison import FittedVariant, compare_models
+from .model.flat import FlatConfigModel
+from .model.sampling import sample_model
+from .posterior.accessor import PosteriorAccessor
+
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
+    from arviz import InferenceData
 
 
 class BayesEpistemicModel:
@@ -51,7 +54,7 @@ class BayesEpistemicModel:
         cfg: ModelConfig | None = None,
         *,
         name: str | None = None,
-    ):
+    ) -> None:
         self.cfg = cfg or ModelConfig()
         self.name = name
         self.data: EpistemicDataset = encode_dataset(df, self.cfg)
@@ -63,7 +66,7 @@ class BayesEpistemicModel:
         builder: FlatConfigModel | None = None,
         prior_predictive: bool = True,
         posterior_predictive: bool = True,
-    ) -> "BayesEpistemicModel":
+    ) -> BayesEpistemicModel:
         """Build and sample the model.
 
         Parameters
@@ -93,16 +96,19 @@ class BayesEpistemicModel:
 
     @property
     def posterior(self) -> PosteriorAccessor:
+        """Return the posterior accessor; raise if not yet fitted."""
         if self._posterior is None:
             raise RuntimeError("Call fit() before accessing the posterior.")
         return self._posterior
 
     @property
     def idata(self) -> InferenceData:
+        """Return the underlying ArviZ InferenceData object."""
         return self.posterior.idata
 
     @property
     def is_fitted(self) -> bool:
+        """Return True if the model has been fitted."""
         return self._posterior is not None
 
     # ── Serialization ───────────────────────────────────────────────────
@@ -138,7 +144,7 @@ class BayesEpistemicModel:
         cfg: ModelConfig | None = None,
         *,
         name: str | None = None,
-    ) -> "BayesEpistemicModel":
+    ) -> BayesEpistemicModel:
         """Reload a fitted model from a NetCDF file.
 
         Parameters
@@ -173,6 +179,7 @@ class BayesEpistemicModel:
         ref: str | None = None,
         configs: list[str] | None = None,
     ) -> pd.DataFrame:
+        """Compute standardized epistemic bias relative to a reference."""
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
@@ -186,6 +193,7 @@ class BayesEpistemicModel:
         ref: str | None = None,
         configs: list[str] | None = None,
     ) -> pd.DataFrame:
+        """Compute standardized bias including total dispersion."""
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
@@ -203,6 +211,7 @@ class BayesEpistemicModel:
         ref: str | None = None,
         configs: list[str] | None = None,
     ) -> pd.DataFrame:
+        """Compute posterior probabilities for bias exceedance or equivalence."""
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
@@ -244,6 +253,7 @@ class BayesEpistemicModel:
         self,
         configs: list[str] | None = None,
     ) -> pd.DataFrame:
+        """Compute per-configuration variance components."""
         p = self.posterior
         labels = configs or p.config_labels
         return variance.variance_components(
@@ -258,7 +268,8 @@ class BayesEpistemicModel:
         p = self.posterior
         lam = p.lambda_case()
         if lam is None:
-            raise RuntimeError("No lambda_case in posterior. Fit with RandomSlopesModel or descendant.")
+            msg = "No lambda_case in posterior. Fit with RandomSlopesModel."
+            raise RuntimeError(msg)
         case_labels = p.case_labels or [f"Case{i}" for i in range(lam.shape[1])]
         ci_lo, ci_hi = self.cfg.ci
         return pd.DataFrame({
@@ -273,7 +284,11 @@ class BayesEpistemicModel:
         p = self.posterior
         xi = p.xi_case()
         if xi is None:
-            raise RuntimeError("No xi_case in posterior. Fit with RandomSlopesInteractionModel(interaction_loading=True).")
+            msg = (
+                "No xi_case in posterior. Fit with "
+                "RandomSlopesInteractionModel(interaction_loading=True)."
+            )
+            raise RuntimeError(msg)
         case_labels = p.case_labels or [f"Case{i}" for i in range(xi.shape[1])]
         ci_lo, ci_hi = self.cfg.ci
         return pd.DataFrame({
@@ -288,7 +303,8 @@ class BayesEpistemicModel:
         p = self.posterior
         sig = p.sigma_inter()
         if sig is None:
-            raise RuntimeError("No sigma_inter in posterior. Fit with RandomSlopesInteractionModel.")
+            msg = "No sigma_inter in posterior. Fit with RandomSlopesInteractionModel."
+            raise RuntimeError(msg)
         ci_lo, ci_hi = self.cfg.ci
         return pd.DataFrame({
             "component": ["sigma_inter"],
@@ -316,6 +332,7 @@ class BayesEpistemicModel:
         *,
         ratio_mode: Literal["var_over_sigma", "var_over_sigma2"] = "var_over_sigma",
     ) -> pd.DataFrame:
+        """Decompose mu surface into tier, case, and interaction effects."""
         p = self.posterior
         f0_levels, f1_levels, grid = self.data.factor_index_grid()
         decomp = decomposition.axiswise_decomposition_draws(
@@ -329,6 +346,7 @@ class BayesEpistemicModel:
     def level_ranking_tables(
         self,
     ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Compute tier- and case-level ranking tables with interaction."""
         p = self.posterior
         f0_levels, f1_levels, grid = self.data.factor_index_grid()
         decomp = decomposition.axiswise_decomposition_draws(
@@ -348,6 +366,7 @@ class BayesEpistemicModel:
         ref: str | None = None,
         configs: list[str] | None = None,
     ) -> pd.DataFrame:
+        """Compute equivalence probability at a given tolerance alpha."""
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
@@ -363,6 +382,7 @@ class BayesEpistemicModel:
         ref: str | None = None,
         configs: list[str] | None = None,
     ) -> pd.DataFrame:
+        """Sweep equivalence probability across a range of alpha values."""
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
@@ -377,6 +397,7 @@ class BayesEpistemicModel:
         alpha: float = 0.5,
         configs: list[str] | None = None,
     ) -> tuple[list[str], np.ndarray]:
+        """Compute the pairwise epistemic equivalence probability matrix."""
         p = self.posterior
         labels, subset_idx = self.data.subset_config_indices(configs)
         return equivalence.epistemic_equivalence_matrix(
@@ -393,6 +414,7 @@ class BayesEpistemicModel:
         threshold: float | None = None,
         n_clusters: int | None = None,
     ) -> pd.DataFrame:
+        """Cluster configurations by epistemic equivalence distance."""
         p = self.posterior
         labels, subset_idx = self.data.subset_config_indices(configs)
         return equivalence.epistemic_clusters(
@@ -404,6 +426,7 @@ class BayesEpistemicModel:
     # ── Analysis: fitted values ──────────────────────────────────────────
 
     def fitted_values(self) -> pd.DataFrame:
+        """Compute posterior-mean fitted values and residuals."""
         p = self.posterior
         return fitted.posterior_mean_fitted(
             self.data.y, p.mu0(), p.mu_config(), p.delta_st(), p.b_run(),
@@ -411,6 +434,7 @@ class BayesEpistemicModel:
         )
 
     def r2_table(self) -> pd.DataFrame:
+        """Compute posterior R-squared summary."""
         p = self.posterior
         return fitted.posterior_r2(
             self.data.y, p.mu0(), p.mu_config(), p.delta_st(), p.b_run(),
@@ -419,6 +443,7 @@ class BayesEpistemicModel:
         )
 
     def mu_hat_table(self, configs: list[str] | None = None) -> pd.DataFrame:
+        """Compute configuration intercepts with posterior summaries."""
         p = self.posterior
         labels, subset_idx = self.data.subset_config_indices(configs)
         return fitted.mu_hat_table(
@@ -426,24 +451,30 @@ class BayesEpistemicModel:
         )
 
     def delta_hat_table(self) -> pd.DataFrame:
+        """Compute station random-effect posterior summaries."""
         p = self.posterior
         return fitted.delta_hat_table(p.delta_st(), p.station_labels, ci=self.cfg.ci)
 
     # ── Diagnostics ──────────────────────────────────────────────────────
 
     def diagnostics_summary(self, var_names: list[str] | None = None) -> pd.DataFrame:
+        """Return convergence diagnostics for all or selected parameters."""
         return diagnostics_summary(self.idata, var_names)
 
     def divergences_count(self) -> int:
+        """Return the number of divergent transitions."""
         return divergences_count(self.idata)
 
-    def rhat_table(self, **kwargs) -> pd.DataFrame:
+    def rhat_table(self, **kwargs: Any) -> pd.DataFrame:
+        """Return R-hat convergence statistics."""
         return rhat_table(self.idata, **kwargs)
 
-    def ess_table(self, **kwargs) -> pd.DataFrame:
+    def ess_table(self, **kwargs: Any) -> pd.DataFrame:
+        """Return effective sample size statistics."""
         return ess_table(self.idata, **kwargs)
 
     def posterior_predictive_check(self) -> pd.DataFrame:
+        """Run posterior predictive check and return summary statistics."""
         p = self.posterior
         y_rep = p.y_rep()
         if y_rep is None:
@@ -459,22 +490,28 @@ class BayesEpistemicModel:
 
     # ── Plots ───────────────────────────────────────────────────────────
 
-    def plot_rhat_bar(self, **kw):
+    def plot_rhat_bar(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot R-hat convergence bar chart."""
         from .plots.diagnostics import plot_rhat_bar as _plot
         return _plot(self.rhat_table(), **kw)
 
-    def plot_ess_bar(self, kind: str = "bulk", **kw):
+    def plot_ess_bar(self, kind: str = "bulk", **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot effective sample size bar chart."""
         from .plots.diagnostics import plot_ess_bar as _plot
         return _plot(self.ess_table(), kind=kind, **kw)
 
-    def plot_mu_triptych(self, ref: str | None = None, **kw):
+    def plot_mu_triptych(self, ref: str | None = None, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+        """Plot three-panel heatmap of absolute mu, delta-mu, and median ratio."""
         ref = ref or self.data.ref_label
         mu_hat = self.mu_hat_table()
         bias_df = self.standardized_bias_table()
         from .plots.bias import plot_mu_triptych as _plot
         return _plot(mu_hat, bias_df, ref=ref, **kw)
 
-    def plot_standardized_bias(self, station_subplots: bool = False, **kw):
+    def plot_standardized_bias(
+        self, station_subplots: bool = False, **kw: Any,
+    ) -> tuple[plt.Figure, np.ndarray]:
+        """Plot layered standardized-bias figure with density and raw data."""
         bias_df = self.standardized_bias_table()
         from .plots.bias import plot_standardized_bias as _plot
 
@@ -524,15 +561,21 @@ class BayesEpistemicModel:
         return _plot(bias_df, station_subplots=station_subplots,
                      ref_label=self.data.ref_label, **kw)
 
-    def plot_radar_bias_probability(self, alpha: float = 0.5, **kw):
+    def plot_radar_bias_probability(
+        self, alpha: float = 0.5, **kw: Any,
+    ) -> tuple[plt.Figure, plt.Axes]:
+        """Plot radar chart of bias exceedance probabilities."""
         equiv_df = self.equivalence_probability_table(alpha=alpha)
         from .plots.bias import plot_radar_bias_probability as _plot
         return _plot(equiv_df, alpha=alpha, ref=self.data.ref_label, **kw)
 
-    def plot_bias_ridgeplot(self, station_subplots: bool = False, **kw):
+    def plot_bias_ridgeplot(
+        self, station_subplots: bool = False, **kw: Any,
+    ) -> tuple[plt.Figure, np.ndarray]:
+        """Plot ridgeplot of posterior bias densities."""
         p = self.posterior
         from .plots.bias import plot_bias_ridgeplot as _plot
-        extra = {}
+        extra: dict[str, Any] = {}
         if station_subplots:
             extra = dict(
                 y_obs=self.data.y,
@@ -546,29 +589,36 @@ class BayesEpistemicModel:
             **extra, **kw,
         )
 
-    def plot_bias_probability(self, **kw):
+    def plot_bias_probability(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot bar chart of bias exceedance probabilities."""
         prob_df = self.bias_probability_table(**{
-            k: kw.pop(k) for k in list(kw) if k in ("mode", "band", "alpha_equiv", "ref", "configs")
+            k: kw.pop(k)
+            for k in list(kw)
+            if k in ("mode", "band", "alpha_equiv", "ref", "configs")
         })
         from .plots.bias import plot_bias_probability as _plot
         return _plot(prob_df, **kw)
 
-    def plot_variance_budget(self, **kw):
+    def plot_variance_budget(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot variance-budget bar chart."""
         vb = self.variance_budget_table()
         from .plots.variance import plot_variance_budget_bars as _plot
         return _plot(vb, **kw)
 
-    def plot_variance_budget_waterfall(self, **kw):
+    def plot_variance_budget_waterfall(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot variance-budget waterfall chart."""
         vb = self.variance_budget_table()
         from .plots.variance import plot_variance_budget_waterfall as _plot
         return _plot(vb, **kw)
 
-    def plot_decomposition_bars(self, **kw):
+    def plot_decomposition_bars(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot axis-wise decomposition bar chart."""
         decomp = self.axiswise_decomposition_table()
         from .plots.variance import plot_decomposition_bars as _plot
         return _plot(decomp, **kw)
 
-    def plot_sigma_stability(self, **kw):
+    def plot_sigma_stability(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot per-configuration residual-scale stability."""
         vc = self.variance_component_table()
         p = self.posterior
         sigma_run_draws = p.sigma_run()
@@ -576,55 +626,81 @@ class BayesEpistemicModel:
         from .plots.variance import plot_sigma_stability as _plot
         return _plot(vc, sigma_run_med=sigma_run_med, **kw)
 
-    def plot_variance_ratio(self, **kw):
+    def plot_variance_ratio(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot variance-ratio forest across configurations."""
         p = self.posterior
         from .plots.variance import plot_variance_ratio as _plot
-        return _plot(p.sigma_run(), p.sigma_eps(),
-                     p.config_labels, ci=self.cfg.ci, nu=p.nu(), **kw)
+        return _plot(
+            p.sigma_run(), p.sigma_eps(),
+            p.config_labels, ci=self.cfg.ci, nu=p.nu(), **kw,
+        )
 
-    def plot_level_rankings(self, **kw):
+    def plot_level_rankings(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+        """Plot tier and case level rankings."""
         tier_tbl, case_tbl, _ = self.level_ranking_tables()
         from .plots.variance import plot_level_rankings as _plot
         factor_names = (self.cfg.factors[0].name, self.cfg.factors[1].name)
         return _plot(tier_tbl, case_tbl, factor_names=factor_names, **kw)
 
-    def plot_sigma_stability_triptych(self, **kw):
+    def plot_sigma_stability_triptych(
+        self, **kw: Any,
+    ) -> tuple[plt.Figure, np.ndarray]:
+        """Plot three-panel sigma stability figure."""
         p = self.posterior
         from .plots.variance import plot_sigma_stability_triptych as _plot
-        return _plot(p.sigma_eps(), p.sigma_run(), p.config_labels,
-                     p.ref_idx, ci=self.cfg.ci, nu=p.nu(), **kw)
+        return _plot(
+            p.sigma_eps(), p.sigma_run(), p.config_labels,
+            p.ref_idx, ci=self.cfg.ci, nu=p.nu(), **kw,
+        )
 
-    def plot_equivalence_matrix(self, alpha: float = 0.5, **kw):
+    def plot_equivalence_matrix(
+        self, alpha: float = 0.5, **kw: Any,
+    ) -> tuple[plt.Figure, plt.Axes]:
+        """Plot equivalence probability heatmap."""
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_matrix as _plot
         return _plot(labels, P_mat, alpha=alpha, **kw)
 
-    def plot_equivalence_matrix_with_dendrogram(self, alpha: float = 0.5, **kw):
+    def plot_equivalence_matrix_with_dendrogram(
+        self, alpha: float = 0.5, **kw: Any,
+    ) -> tuple[plt.Figure, np.ndarray, np.ndarray]:
+        """Plot equivalence heatmap with dendrogram overlay."""
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
-        from .plots.equivalence import plot_equivalence_matrix_with_dendrogram as _plot
+        from .plots.equivalence import (
+            plot_equivalence_matrix_with_dendrogram as _plot,
+        )
         return _plot(labels, P_mat, alpha=alpha, **kw)
 
-    def plot_equivalence_dendrogram(self, alpha: float = 0.5, **kw):
+    def plot_equivalence_dendrogram(
+        self, alpha: float = 0.5, **kw: Any,
+    ) -> tuple[plt.Figure, plt.Axes]:
+        """Plot epistemic-distance dendrogram."""
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_dendrogram as _plot
         return _plot(labels, P_mat, alpha=alpha, **kw)
 
-    def plot_equivalence_sweep(self, **kw):
+    def plot_equivalence_sweep(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot equivalence probability sweep across alpha values."""
         sweep = self.equivalence_sweep_table()
         from .plots.equivalence import plot_equivalence_sweep as _plot
         return _plot(sweep, **kw)
 
-    def plot_equivalence_bars_plus_sweep(self, alpha: float = 0.5, **kw):
+    def plot_equivalence_bars_plus_sweep(
+        self, alpha: float = 0.5, **kw: Any,
+    ) -> tuple[plt.Figure, np.ndarray]:
+        """Plot combined equivalence bars and sweep lines."""
         equiv = self.equivalence_probability_table(alpha=alpha)
         alphas = kw.pop("alphas", None)
         sweep = self.equivalence_sweep_table(alphas=alphas)
-        from .plots.equivalence import plot_equivalence_bars_plus_sweep as _plot
+        from .plots.equivalence import (
+            plot_equivalence_bars_plus_sweep as _plot,
+        )
         return _plot(equiv, sweep, alpha=alpha, **kw)
 
     # ── Interaction plots (v8+, v9+) ─────────────────────────────────────
 
-    def plot_interaction_heatmap(self, **kw):
-        """Heatmap of the shared station×rupture interaction γ_sr.
+    def plot_interaction_heatmap(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot heatmap of the shared station-rupture interaction.
 
         Requires a v8+ interaction model in the posterior.
         """
@@ -634,19 +710,20 @@ class BayesEpistemicModel:
                 "Posterior has no 'gamma_sr'. Fit with "
                 "RandomSlopesInteractionModel (v8+) to use this plot."
             )
+        gamma = p.gamma_sr()
+        assert gamma is not None  # guaranteed by has_interaction guard
         from .plots.interaction import plot_interaction_heatmap as _plot
         return _plot(
-            p.gamma_sr(),
+            gamma,
             list(self.data.station_labels),
             list(self.data.run_labels),
             **kw,
         )
 
-    def plot_interaction_by_case(self, **kw):
-        """Per-Case panel of effective interactions ξ_case·γ_sr.
+    def plot_interaction_by_case(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+        """Plot per-Case panel of effective interactions.
 
-        Works for both v8 (ξ absent → ξ=1 for all Cases) and v9
-        (ξ present → loaded panels).  This is the v9 hero figure.
+        Works for both v8 and v9 interaction models.
         """
         p = self.posterior
         if not p.has_interaction:
@@ -654,24 +731,25 @@ class BayesEpistemicModel:
                 "Posterior has no 'gamma_sr'. Fit with "
                 "RandomSlopesInteractionModel (v8+) to use this plot."
             )
+        gamma = p.gamma_sr()
+        assert gamma is not None  # guaranteed by has_interaction guard
         case_labels = p.case_labels
         if case_labels is None:
-            # Fallback: read from factor spec
             case_labels = list(self.data.factor_levels[
                 self.cfg.factors[1].name
             ])
         from .plots.interaction import plot_interaction_by_case as _plot
         return _plot(
-            p.gamma_sr(),
+            gamma,
             case_labels,
             list(self.data.station_labels),
             list(self.data.run_labels),
-            xi_case_draws=p.xi_case(),  # None for v8, (S, n_cases) for v9
+            xi_case_draws=p.xi_case(),
             **kw,
         )
 
-    def plot_interaction_forest(self, **kw):
-        """Forest plot of γ_sr cells with credible intervals.
+    def plot_interaction_forest(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot forest plot of interaction cells with credible intervals.
 
         Requires a v8+ interaction model in the posterior.
         """
@@ -681,23 +759,28 @@ class BayesEpistemicModel:
                 "Posterior has no 'gamma_sr'. Fit with "
                 "RandomSlopesInteractionModel (v8+) to use this plot."
             )
+        gamma = p.gamma_sr()
+        assert gamma is not None  # guaranteed by has_interaction guard
         labels = p.station_run_labels
         if labels is None:
-            # Fallback: reconstruct from data
             labels = [
                 f"{s}|{r}"
                 for s in self.data.station_labels
                 for r in self.data.run_labels
             ]
         from .plots.interaction import plot_interaction_forest as _plot
-        return _plot(p.gamma_sr(), labels, **kw)
+        return _plot(gamma, labels, **kw)
 
-    def plot_station_posteriors(self, **kw):
+    def plot_station_posteriors(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot station random-effect posterior densities."""
         p = self.posterior
         from .plots.posterior import plot_station_posteriors as _plot
         return _plot(p.delta_st(), p.station_labels, **kw)
 
-    def plot_observed_vs_predicted(self, **kw):
+    def plot_observed_vs_predicted(
+        self, **kw: Any,
+    ) -> tuple[plt.Figure, plt.Axes]:
+        """Plot observed vs. posterior-mean predicted values."""
         p = self.posterior
         fv = self.fitted_values()
         from .plots.posterior import plot_observed_vs_predicted as _plot
@@ -708,22 +791,26 @@ class BayesEpistemicModel:
             **kw,
         )
 
-    def plot_mu_density(self, **kw):
+    def plot_mu_density(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+        """Plot posterior density of configuration intercepts."""
         p = self.posterior
         from .plots.posterior import plot_mu_density as _plot
         return _plot(p.mu0(), p.mu_config(), p.config_labels, **kw)
 
-    def plot_ppc(self, **kw):
+    def plot_ppc(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot posterior predictive check summary."""
         ppc_df = self.posterior_predictive_check()
         from .plots.posterior import plot_ppc as _plot
         return _plot(ppc_df, **kw)
 
-    def plot_residuals(self, **kw):
+    def plot_residuals(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+        """Plot residual diagnostics."""
         fv = self.fitted_values()
         from .plots.posterior import plot_residuals as _plot
         return _plot(fv, **kw)
 
-    def plot_raw_data(self, **kw):
+    def plot_raw_data(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+        """Plot raw EDP data by configuration and station."""
         from .plots.posterior import plot_raw_data as _plot
         return _plot(
             self.data.y,
@@ -734,7 +821,8 @@ class BayesEpistemicModel:
             **kw,
         )
 
-    def plot_ppc_density(self, **kw):
+    def plot_ppc_density(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        """Plot posterior predictive density overlay."""
         p = self.posterior
         y_rep = p.y_rep()
         if y_rep is None:
@@ -745,15 +833,18 @@ class BayesEpistemicModel:
         from .plots.posterior import plot_ppc_density as _plot
         return _plot(self.data.y, y_rep, **kw)
 
-    def plot_trace(self, **kw):
+    def plot_trace(self, **kw: Any) -> plt.Figure:
+        """Plot ArviZ traceplot for key parameters."""
         from .plots.posterior import plot_trace as _plot
         return _plot(self.idata, **kw)
 
-    def plot_pair(self, **kw):
+    def plot_pair(self, **kw: Any) -> plt.Figure:
+        """Plot ArviZ pair plot for key parameters."""
         from .plots.posterior import plot_pair as _plot
         return _plot(self.idata, **kw)
 
-    def plot_forest_arviz(self, **kw):
+    def plot_forest_arviz(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+        """Plot ArviZ forest plot with observed data overlay."""
         from .plots.posterior import plot_forest_arviz as _plot
         d = self.data
         kw.setdefault("observed_y", d.y)
