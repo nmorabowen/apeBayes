@@ -485,9 +485,11 @@ class BayesEpistemicModel:
         ref_idx = list(d.config_labels).index(d.ref_label)
         ref_draws = mu_config[:, ref_idx]  # (S,)
 
-        # Posterior beta draws (for violins)
+        # Posterior beta draws (for violins) — normalise by median σ_run
+        # so the violin shows Δμ uncertainty without σ_run denominator noise
         if "beta_draws" not in kw:
-            beta_all = (mu_config - ref_draws[:, None]) / sigma_run[:, None]
+            sigma_run_med = float(np.median(sigma_run))
+            beta_all = (mu_config - ref_draws[:, None]) / sigma_run_med
             kw["beta_draws"] = beta_all
             kw["beta_labels"] = list(d.config_labels)
 
