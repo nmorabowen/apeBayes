@@ -75,8 +75,11 @@ def plot_mu_triptych(
     fig, axes = plt.subplots(1, 3, figsize=figsize, sharey=True,
                              constrained_layout=True)
 
+    _annot_kws = {"size": 7}
+
     sns.heatmap(
         pivot_mu, annot=annot, fmt=fmt_mu, ax=axes[0], cmap=cmap,
+        annot_kws=_annot_kws,
         cbar_kws={"label": (
             "posterior median of EDP" if original_edp_scale
             else r"posterior median of $\mu$ (log scale)"
@@ -91,7 +94,7 @@ def plot_mu_triptych(
     sns.heatmap(
         pivot_dmu, annot=annot, fmt=fmt_dmu,
         vmin=vmin_dmu, vmax=vmax_dmu, center=0.0,
-        ax=axes[1], cmap=cmap,
+        ax=axes[1], cmap=cmap, annot_kws=_annot_kws,
         cbar_kws={"label": (
             f"median dEDP vs {ref}" if original_edp_scale
             else rf"median $\Delta\mu$ vs {ref}"
@@ -109,7 +112,7 @@ def plot_mu_triptych(
         annot=(pivot_ratio.round(2) if annot else False),
         fmt=fmt_ratio,
         vmin=vmin_r, vmax=vmax_r, center=0.0,
-        ax=axes[2], cmap=cmap,
+        ax=axes[2], cmap=cmap, annot_kws=_annot_kws,
         cbar_kws={"label": r"color: $\log$ ratio (= $\Delta\mu$)"},
     )
     axes[2].set_title(rf"Median ratio $\exp(\Delta\mu_{{ij}})$ vs {ref}")
@@ -453,10 +456,12 @@ def _draw_bias_panel(
     lo = df_ord[col_lo].to_numpy(dtype=float)
     hi = df_ord[col_hi].to_numpy(dtype=float)
 
-    # Layer 0: aleatory band |beta| < 1
+    # Layer 0: aleatory band |beta| < 1 with dashed boundary lines
     ax.axvspan(-1.0, 1.0, color="grey", alpha=0.10, zorder=0,
                label=r"$|\beta| < 1$ (within aleatory variability)")
     ax.axvline(0, color="black", lw=0.8, alpha=0.6, zorder=1)
+    ax.axvline(-1.0, color="0.4", lw=0.6, ls="--", alpha=0.6, zorder=0)
+    ax.axvline(1.0, color="0.4", lw=0.6, ls="--", alpha=0.6, zorder=0)
 
     # Layer 1: symmetric violin KDEs of posterior beta
     if beta_draws is not None and beta_labels is not None:

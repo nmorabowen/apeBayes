@@ -474,25 +474,50 @@ class BayesEpistemicModel:
         from .plots.bias import plot_mu_triptych as _plot
         return _plot(mu_hat, bias_df, ref=ref, **kw)
 
-    def plot_bias_forest(self, **kw):
-        bias_df = self.standardized_bias_table()
-        from .plots.bias import plot_bias_forest as _plot
-        return _plot(bias_df, ref_label=self.data.ref_label, **kw)
-
     def plot_standardized_bias(self, station_subplots: bool = False, **kw):
         bias_df = self.standardized_bias_table()
         from .plots.bias import plot_standardized_bias as _plot
 
-        # Compute full posterior beta_draws if not supplied by caller
+        p = self.posterior
+        d = self.data
+        mu_config = p.mu_config()         # (S, K)
+        sigma_run = p.sigma_run()          # (S,)
+        ref_idx = list(d.config_labels).index(d.ref_label)
+        ref_draws = mu_config[:, ref_idx]  # (S,)
+
+        # Posterior beta draws (for violins)
         if "beta_draws" not in kw:
-            p = self.posterior
-            mu_config = p.mu_config()         # (S, K)
-            sigma_run = p.sigma_run()          # (S,)
-            ref_idx = list(self.data.config_labels).index(self.data.ref_label)
-            ref_draws = mu_config[:, ref_idx]  # (S,)
             beta_all = (mu_config - ref_draws[:, None]) / sigma_run[:, None]
             kw["beta_draws"] = beta_all
-            kw["beta_labels"] = list(self.data.config_labels)
+            kw["beta_labels"] = list(d.config_labels)
+
+        # Raw per-runkey dots and config means (for data overlay)
+        if "raw_dots" not in kw:
+            sigma_run_med = float(np.median(sigma_run))
+            n_configs = d.n_configs
+            n_runs = d.n_runs
+            labels_list = list(d.config_labels)
+
+            # Per-runkey: (y_config_run_mean - y_ref_run_mean) / sigma_run_med
+            raw_dots = np.full((n_configs, n_runs), np.nan)
+            ref_by_run = np.zeros(n_runs)
+            for r in range(n_runs):
+                ref_mask = (d.config_idx == ref_idx) & (d.run_idx == r)
+                if ref_mask.any():
+                    ref_by_run[r] = float(np.mean(d.y[ref_mask]))
+
+            for k in range(n_configs):
+                for r in range(n_runs):
+                    mask = (d.config_idx == k) & (d.run_idx == r)
+                    if mask.any():
+                        raw_dots[k, r] = (
+                            float(np.mean(d.y[mask])) - ref_by_run[r]
+                        ) / sigma_run_med
+
+            raw_means = np.nanmean(raw_dots, axis=1)
+            kw["raw_dots"] = raw_dots
+            kw["raw_means"] = raw_means
+            kw["raw_labels"] = labels_list
 
         return _plot(bias_df, station_subplots=station_subplots,
                      ref_label=self.data.ref_label, **kw)

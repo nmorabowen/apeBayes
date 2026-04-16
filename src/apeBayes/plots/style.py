@@ -78,12 +78,12 @@ VARIANCE_COLORS: dict[str, str] = {
 
 # -- Colormaps -----------------------------------------------------------------
 
-_DIV_NODES = [NAVY, "#8BAAC8", "#FFFFFF", "#DFC87A", AMBER]
+_DIV_NODES = [NAVY, "#6B9CC4", "#FFFFFF", "#C47070", "#8B1A1A"]
 CMAP_DIV_OBJ = mcolors.LinearSegmentedColormap.from_list(
-    "NavyAmber", [mcolors.to_rgb(c) for c in _DIV_NODES], N=256,
+    "NavyCrimson", [mcolors.to_rgb(c) for c in _DIV_NODES], N=256,
 )
-mpl.colormaps.register(CMAP_DIV_OBJ, name="NavyAmber")
-CMAP_DIV: str = "NavyAmber"
+mpl.colormaps.register(CMAP_DIV_OBJ, name="NavyCrimson")
+CMAP_DIV: str = "NavyCrimson"
 
 _SEQ_NODES = [ICE, STEEL, TEAL, NAVY]
 CMAP_SEQ_OBJ = mcolors.LinearSegmentedColormap.from_list(
