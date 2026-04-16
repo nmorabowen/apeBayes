@@ -228,9 +228,6 @@ def plot_equivalence_bars_plus_sweep(
     ax = axes[0]
     ax.barh(y, vals, color=colors, edgecolor="white", lw=0.4, alpha=0.85,
             height=0.7)
-    # Alpha threshold dotted line
-    ax.axvline(alpha, color="0.3", lw=0.8, ls=":", zorder=0,
-               label=rf"$\alpha = {alpha}$")
     ax.set_yticks(y)
     ax.set_yticklabels(labels_sorted)
     ax.set_xlabel(rf"$P(|\Delta\mu| < {alpha}\,\sigma_{{\mathrm{{run}}}})$")

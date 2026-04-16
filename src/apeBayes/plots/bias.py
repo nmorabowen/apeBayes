@@ -548,18 +548,7 @@ def _draw_bias_panel(
                     label=("raw per-runkey" if i == 0 else None),
                 )
 
-    # Layer 3: raw TierCase mean (X markers)
-    if raw_means is not None and raw_labels is not None:
-        label_to_y = {lbl: yi for lbl, yi in zip(labels, y)}
-        x_vals, y_vals = [], []
-        for i, rl in enumerate(raw_labels):
-            if rl in label_to_y:
-                x_vals.append(raw_means[i])
-                y_vals.append(label_to_y[rl])
-        if x_vals:
-            ax.scatter(x_vals, y_vals, marker="X", s=45, linewidths=1.8,
-                       color=PALETTE[3], zorder=5,
-                       label="raw TierCase mean")
+    # Layer 3: raw TierCase mean (removed — redundant with posterior median)
 
     # Layer 4: posterior credible interval + median (error bars with caps)
     ax.errorbar(

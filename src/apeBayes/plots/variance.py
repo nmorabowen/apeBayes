@@ -318,21 +318,46 @@ def plot_decomposition_bars(
     colors = decomp_colors
 
     fig, ax = plt.subplots(figsize=figsize)
-    ax.bar(x, med, color=colors, edgecolor="white", lw=0.4, alpha=0.85, width=0.6)
 
-    # CI whiskers
-    if not np.array_equal(lo, med):
-        ax.errorbar(x, med, yerr=[med - lo, hi - med],
-                    fmt="none", ecolor="0.3", capsize=3, lw=0.8)
+    # Horizontal waterfall: stacked left-to-right
+    left = 0.0
+    y_pos = 0
+    for i, (lbl, val, pct) in enumerate(zip(labels, med, med)):
+        ax.barh(y_pos, val, left=left, color=colors[i], edgecolor="white",
+                lw=0.5, height=0.55)
+        # Label inside if wide enough, outside if not
+        if val > 8:
+            ax.text(left + val / 2, y_pos, f"{val:.1f}%",
+                    ha="center", va="center", fontweight="bold", color="white")
+        else:
+            ax.text(left + val + 1.0, y_pos, f"{val:.1f}%",
+                    ha="left", va="center", color=colors[i])
+        left += val
 
-    for i, (v, lbl) in enumerate(zip(med, labels)):
-        ax.text(i, v + 1.5, f"{v:.1f}%", ha="center", va="bottom", fontsize=8)
+    # Short labels on y-axis
+    short = []
+    for lbl in labels:
+        if "interaction" in lbl.lower():
+            short.append("Interaction")
+        elif "SSI" in lbl or "Factor0" in lbl:
+            short.append("SSI")
+        elif "Nonlinearity" in lbl or "Factor1" in lbl:
+            short.append("Nonlinearity")
+        else:
+            short.append(lbl[:12])
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=7)
-    ax.set_ylabel("Share of epistemic variance (%)")
+    ax.set_yticks([0])
+    ax.set_yticklabels([""])
+    ax.set_xlabel("Share of epistemic variance (%)")
+    ax.set_xlim(0, 100)
     ax.set_title("Factorial decomposition of config-effect variance")
-    ax.set_ylim(0, min(max(hi) * 1.25, 110))
+
+    # Legend from labels
+    from matplotlib.patches import Patch
+    ax.legend(
+        [Patch(facecolor=c, edgecolor="white") for c in colors],
+        short, loc="upper right",
+    )
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, ax
@@ -391,22 +416,36 @@ def plot_sigma_stability(
     lo = df_eps["lo"].to_numpy(dtype=float)
     hi = df_eps["hi"].to_numpy(dtype=float)
 
-    fig, ax = plt.subplots(figsize=figsize)
+    n = len(labels)
+    if figsize == (HALF_WIDTH, 3.0):
+        figsize = (HALF_WIDTH, max(0.25 * n + 1.0, 3.0))
 
-    # CI bars
-    for i in range(len(labels)):
-        ax.plot([x[i], x[i]], [lo[i], hi[i]], color=PALETTE[1], lw=2, solid_capstyle="round")
-    ax.scatter(x, med, s=35, color=PALETTE[1], zorder=5, edgecolors="white", lw=0.5,
+    fig, ax = plt.subplots(figsize=figsize)
+    y = np.arange(n)
+
+    # Horizontal CI stems
+    from .helpers import case_color as _cc
+    colors = [_cc(lbl) for lbl in labels]
+    for i in range(n):
+        ax.plot([lo[i], hi[i]], [y[i], y[i]], color=colors[i], lw=1.5, solid_capstyle="round")
+    ax.scatter(med, y, s=35, c=colors, zorder=5, edgecolors="white", lw=0.5,
                label=r"$\sigma_{\varepsilon}$ per config")
 
+    # Value annotations
+    x_max = float(hi.max())
+    for i in range(n):
+        ax.text(hi[i] + x_max * 0.03, y[i], f"{med[i]:.3f}",
+                va="center", color="0.3")
+
     if sigma_run_med is not None:
-        ax.axhline(sigma_run_med, color=PALETTE[0], lw=1.3, ls="--",
+        ax.axvline(sigma_run_med, color=VARIANCE_COLORS["between_rupture"], lw=1.3, ls="--",
                    label=rf"$\sigma_{{\mathrm{{run}}}} = {sigma_run_med:.3f}$")
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
-    ax.set_ylabel("Scale parameter (log EDP)")
-    ax.legend(fontsize=7)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Scale parameter (log EDP)")
+    ax.legend(loc="lower right")
     ax.set_title(r"$\sigma_{\varepsilon}$ stability across configurations")
 
     savefig(fig, out_dir, filename, prefix=prefix)

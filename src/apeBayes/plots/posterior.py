@@ -774,10 +774,21 @@ def plot_forest_arviz(
             ax.set_xlabel("posterior value")
             ax.set_title(vn)
 
-        ax.grid(True, axis="x", alpha=0.25, lw=0.5, zorder=0)
+        ax.grid(True, axis="both", alpha=0.2, lw=0.4, zorder=0)
 
     ci_pct = int(ci * 100)
     fig.suptitle(f"Posterior {ci_pct}% HDI vs observed data")
+
+    # Collect legend handles from first panel and place at bottom
+    handles, labs = axes[0].get_legend_handles_labels()
+    if handles:
+        # Remove per-panel legends
+        for a in axes:
+            leg = a.get_legend()
+            if leg is not None:
+                leg.remove()
+        fig.legend(handles, labs, loc="lower center",
+                   bbox_to_anchor=(0.5, -0.04), ncol=len(handles), frameon=True)
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, axes
