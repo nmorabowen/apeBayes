@@ -19,7 +19,7 @@ from .helpers import (
     edp_axis_label,
     order_config_labels,
 )
-from .style import PALETTE, FULL_WIDTH, HALF_WIDTH, NAVY, TEAL, STEEL
+from .style import PALETTE, FULL_WIDTH, HALF_WIDTH, NAVY, TEAL, STEEL, ICE
 
 
 # ── HDI helper ────────────────────────────────────────────────────────
@@ -496,17 +496,20 @@ def plot_forest_arviz(
     prefix: str = "",
     filename: str = "forest_arviz.pdf",
 ) -> tuple[plt.Figure, np.ndarray]:
-    """Custom forest plot with observed-data overlay.
+    """Forest plot with posterior predictive intervals and observed data.
 
-    For ``mu_config``: plots the full config-level posterior
-    ``mu0 + mu_config[k]`` (the expected log-EDP for each config,
-    marginalised over stations and runs) against raw observations.
-    This ensures the HDI width reflects the model's actual uncertainty
-    about each config's mean response, not just the shrinkage-regularised
-    deviation.
+    Produces **separate panels** for each variable block (mu_config,
+    delta_st) so they can have independent x-axis scales.
 
-    For ``delta_st``: plots station deviations as-is (zero-centred)
-    against per-station cell means minus the global mean.
+    For ``mu_config``: shows two nested intervals —
+      - **Outer band** (light): posterior predictive interval per config,
+        including run dispersion and residual noise.  This should span
+        roughly the same range as the data.
+      - **Inner bar** (dark): posterior HDI of the conditional mean
+        ``mu0 + mu_config[k]``.
+
+    For ``delta_st``: shows the station deviation HDI against
+    per-station cell means (zero-centred).
 
     Parameters
     ----------
@@ -515,16 +518,12 @@ def plot_forest_arviz(
     var_names : list[str]
         Variables to plot.  Default ``["mu_config", "delta_st"]``.
     observed_y : (N,) array, optional
-        Observed log-EDP values.  Individual observations are shown
-        as semi-transparent dots behind the posterior intervals.
-    config_idx, station_idx, run_idx : (N,) int arrays, optional
-        Factor indices aligned with *observed_y*.
-    config_labels, station_labels : list[str], optional
-        Human-readable labels for the factor levels.
+        Observed log-EDP values.
     ci : float
         Credible interval width (default 0.94 = 94% HDI).
     """
     from ..utils import flatten_posterior
+    from scipy.stats import norm as _norm
 
     out_dir = ensure_dir(out_dir)
 
@@ -533,60 +532,137 @@ def plot_forest_arviz(
 
     post = idata.posterior
 
-    # Pre-extract mu0 for building full config intercepts
-    mu0_flat = None
-    if "mu0" in post:
-        mu0_flat = flatten_posterior(post["mu0"]).ravel()  # (S,)
+    # Pre-extract shared draws
+    mu0_flat = flatten_posterior(post["mu0"]).ravel() if "mu0" in post else None
+    sigma_run_flat = (
+        flatten_posterior(post["sigma_run"]).ravel() if "sigma_run" in post else None
+    )
+    sigma_eps_flat = None
+    if "sigma_eps_config" in post:
+        sigma_eps_flat = flatten_posterior(post["sigma_eps_config"])  # (S, K)
+    elif "sigma_eps" in post:
+        sigma_eps_flat = flatten_posterior(post["sigma_eps"]).ravel()  # (S,)
 
-    # Collect all parameter blocks
-    blocks = []
+    # Filter to vars that exist
+    var_names = [vn for vn in var_names if vn in post]
+    n_panels = len(var_names)
+    if n_panels == 0:
+        raise ValueError("None of the requested var_names found in posterior.")
+
+    # Determine panel widths — give mu_config more space
+    width_ratios = []
     for vn in var_names:
-        if vn not in post:
-            continue
+        width_ratios.append(3 if vn.startswith("mu_config") else 1)
+
+    if figsize is None:
+        total_w = sum(2.5 if r == 3 else 1.5 for r in width_ratios) + 0.5
+        draws_k = post[var_names[0]].values
+        if draws_k.ndim == 2:
+            draws_k = draws_k[:, :, np.newaxis]
+        n_rows_0 = draws_k.shape[-1]
+        figsize = (min(total_w, FULL_WIDTH),
+                   max(0.3 * n_rows_0 + 1.0, HALF_WIDTH))
+
+    fig, axes = plt.subplots(
+        1, n_panels, figsize=figsize, constrained_layout=True,
+        gridspec_kw={"width_ratios": width_ratios},
+        squeeze=False,
+    )
+    axes = axes.ravel()
+
+    # Quantile for predictive band
+    z_ci = _norm.ppf(0.5 + ci / 2)
+
+    for panel_idx, vn in enumerate(var_names):
+        ax = axes[panel_idx]
+
         draws = post[vn].values
         if draws.ndim == 2:
             draws = draws[:, :, np.newaxis]
         flat = draws.reshape(-1, draws.shape[-1])  # (S, n_levels)
-
         n_levels = flat.shape[1]
 
-        # For mu_config: add mu0 to get the full config intercept
-        if vn.startswith("mu_config") and mu0_flat is not None:
-            flat_plot = flat + mu0_flat[:, None]  # (S, K)
-        else:
-            flat_plot = flat
-
-        med = np.median(flat_plot, axis=0)
-        lo, hi = _hdi_vec(flat_plot, prob=ci)
-
-        # Determine labels
-        if vn.startswith("mu_config") and config_labels is not None:
-            lbls = config_labels[:n_levels]
-        elif vn.startswith("delta_st") and station_labels is not None:
-            lbls = station_labels[:n_levels]
-        else:
-            dims = post[vn].dims
-            coord_name = dims[-1] if len(dims) > 2 else None
-            if coord_name and coord_name in post.coords:
-                lbls = [str(c) for c in post.coords[coord_name].values]
+        # --- mu_config panel: full predictive ---
+        if vn.startswith("mu_config"):
+            if mu0_flat is not None:
+                flat_mean = flat + mu0_flat[:, None]  # (S, K)
             else:
-                lbls = [f"{vn}[{i}]" for i in range(n_levels)]
+                flat_mean = flat
 
-        # Compute raw data points per level (on the same scale as the bars)
-        raw_per_level = [None] * n_levels
-        if observed_y is not None:
-            if vn.startswith("mu_config") and config_idx is not None:
-                # Bars show mu0 + mu_config[k] (absolute log-EDP scale)
-                # Dots: raw observations for each config
+            med = np.median(flat_mean, axis=0)
+            lo_mean, hi_mean = _hdi_vec(flat_mean, prob=ci)
+
+            # Predictive interval: mean ± z * sqrt(sigma_run² + sigma_eps²)
+            pred_lo = np.copy(lo_mean)
+            pred_hi = np.copy(hi_mean)
+            if sigma_run_flat is not None:
+                for k in range(n_levels):
+                    if sigma_eps_flat is not None:
+                        if sigma_eps_flat.ndim == 2:
+                            sig_e = sigma_eps_flat[:, k]
+                        else:
+                            sig_e = sigma_eps_flat
+                    else:
+                        sig_e = np.zeros_like(sigma_run_flat)
+                    sig_pred = np.sqrt(sigma_run_flat**2 + sig_e**2)
+                    pred_draws = flat_mean[:, k] + np.random.default_rng(42 + k).normal(
+                        0, sig_pred)
+                    pred_lo[k], pred_hi[k] = _hdi(pred_draws, prob=ci)
+
+            # Labels
+            lbls = (config_labels[:n_levels] if config_labels is not None
+                    else [f"config[{i}]" for i in range(n_levels)])
+
+            # Raw data dots
+            raw_per_level = [None] * n_levels
+            if observed_y is not None and config_idx is not None:
                 for k in range(n_levels):
                     mask = config_idx == k
-                    if not np.any(mask):
-                        continue
-                    raw_per_level[k] = observed_y[mask]
+                    if np.any(mask):
+                        raw_per_level[k] = observed_y[mask]
 
-            elif vn.startswith("delta_st") and station_idx is not None:
-                # Bars show delta_st[s] (zero-centred station deviation)
-                # Dots: per-(config,run) cell means minus global mean
+            y = np.arange(n_levels)
+
+            # Layer 0: raw observations
+            for k in range(n_levels):
+                if raw_per_level[k] is not None:
+                    pts = raw_per_level[k]
+                    jitter = np.random.default_rng(42 + k).uniform(
+                        -0.18, 0.18, size=len(pts))
+                    ax.scatter(pts, y[k] + jitter, s=10, alpha=dot_alpha,
+                               color=STEEL, edgecolors="none", zorder=1,
+                               label=("observed" if k == 0 else None))
+
+            # Layer 1: predictive band (wide, light)
+            for k in range(n_levels):
+                ax.plot([pred_lo[k], pred_hi[k]], [y[k], y[k]],
+                        color=ICE, lw=4.0, solid_capstyle="round", zorder=2,
+                        label=(f"{int(ci*100)}% predictive" if k == 0 else None))
+
+            # Layer 2: mean HDI (tight, dark)
+            ax.errorbar(med, y, xerr=[med - lo_mean, hi_mean - med],
+                        fmt="o", ms=4.0, lw=1.6, capsize=3, capthick=1.2,
+                        color=NAVY, markeredgecolor="white",
+                        markeredgewidth=0.4, zorder=4,
+                        label=f"{int(ci*100)}% mean HDI")
+
+            ax.set_yticks(y)
+            ax.set_yticklabels(lbls, fontsize=7)
+            ax.invert_yaxis()
+            ax.set_xlabel("log EDP")
+            ax.set_title(r"$\mu_0 + \mu_{\mathrm{config}}$", fontsize=9)
+            ax.legend(fontsize=6, loc="lower right")
+
+        # --- delta_st panel ---
+        elif vn.startswith("delta_st"):
+            med = np.median(flat, axis=0)
+            lo, hi = _hdi_vec(flat, prob=ci)
+
+            lbls = (station_labels[:n_levels] if station_labels is not None
+                    else [f"station[{i}]" for i in range(n_levels)])
+
+            raw_per_level = [None] * n_levels
+            if observed_y is not None and station_idx is not None:
                 global_mean = float(np.mean(observed_y))
                 for k in range(n_levels):
                     mask = station_idx == k
@@ -606,89 +682,54 @@ def plot_forest_arviz(
                     else:
                         raw_per_level[k] = y_k - global_mean
 
-        blocks.append((vn, lbls, med, lo, hi, raw_per_level))
+            y = np.arange(n_levels)
 
-    # Layout
-    total_rows = sum(len(b[1]) for b in blocks)
-    gap = 1.5
+            for k in range(n_levels):
+                if raw_per_level[k] is not None:
+                    pts = raw_per_level[k]
+                    jitter = np.random.default_rng(42 + k).uniform(
+                        -0.18, 0.18, size=len(pts))
+                    ax.scatter(pts, y[k] + jitter, s=10, alpha=dot_alpha,
+                               color=STEEL, edgecolors="none", zorder=1)
 
-    if figsize is None:
-        figsize = (HALF_WIDTH, max(0.3 * total_rows + 1.5, HALF_WIDTH))
+            ax.errorbar(med, y, xerr=[med - lo, hi - med],
+                        fmt="o", ms=4.0, lw=1.6, capsize=3, capthick=1.2,
+                        color=NAVY, markeredgecolor="white",
+                        markeredgewidth=0.4, zorder=4)
 
-    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+            ax.axvline(0, color="0.4", lw=0.7, ls="--", zorder=0)
+            ax.set_yticks(y)
+            ax.set_yticklabels(lbls, fontsize=7)
+            ax.invert_yaxis()
+            ax.set_xlabel(r"$\delta_{\mathrm{station}}$ (log EDP)")
+            ax.set_title(r"$\delta_{\mathrm{station}}$", fontsize=9)
 
-    y_pos = 0.0
-    yticks = []
-    ytick_labels = []
-
-    block_boundaries = []  # y-positions for separator lines
-
-    for b_idx, (vn, lbls, med, lo, hi, raw) in enumerate(blocks):
-        n = len(lbls)
-        positions = np.arange(n) + y_pos
-
-        # Layer 0: raw data dots
-        for k in range(n):
-            if raw[k] is not None:
-                pts = raw[k]
-                jitter = np.random.default_rng(42 + k).uniform(
-                    -0.2, 0.2, size=len(pts))
-                ax.scatter(pts, positions[k] + jitter, s=12,
-                           alpha=dot_alpha, color=STEEL,
-                           edgecolors="none", zorder=1,
-                           label=("observed" if b_idx == 0 and k == 0
-                                  else None))
-
-        # Layer 1: HDI bars with caplines
-        ax.errorbar(med, positions, xerr=[med - lo, hi - med],
-                    fmt="o", ms=4.5, lw=1.6, capsize=3, capthick=1.2,
-                    color=NAVY, markeredgecolor="white",
-                    markeredgewidth=0.4, zorder=4)
-
-        yticks.extend(positions.tolist())
-        ytick_labels.extend(lbls)
-
-        # Section label
-        if vn.startswith("mu_config"):
-            section_label = r"$\mu_0 + \mu_{\mathrm{config}}$"
-        elif vn.startswith("delta_st"):
-            section_label = r"$\delta_{\mathrm{station}}$"
+        # --- generic fallback ---
         else:
-            section_label = vn
-        ax.text(ax.get_xlim()[0] if ax.get_xlim()[0] != 0 else med.min() - 0.3,
-                positions[0] - 0.6, section_label,
-                fontsize=7, fontstyle="italic", color="0.4")
+            med = np.median(flat, axis=0)
+            lo, hi = _hdi_vec(flat, prob=ci)
+            dims = post[vn].dims
+            coord_name = dims[-1] if len(dims) > 2 else None
+            if coord_name and coord_name in post.coords:
+                lbls = [str(c) for c in post.coords[coord_name].values]
+            else:
+                lbls = [f"{vn}[{i}]" for i in range(n_levels)]
 
-        # Record boundary for separator
-        block_end = positions[-1]
-        y_pos += n + gap
-        if b_idx < len(blocks) - 1:
-            block_boundaries.append(block_end + gap / 2)
+            y = np.arange(n_levels)
+            ax.errorbar(med, y, xerr=[med - lo, hi - med],
+                        fmt="o", ms=4.0, lw=1.6, capsize=3, capthick=1.2,
+                        color=NAVY, markeredgecolor="white",
+                        markeredgewidth=0.4, zorder=4)
+            ax.set_yticks(y)
+            ax.set_yticklabels(lbls, fontsize=7)
+            ax.invert_yaxis()
+            ax.set_xlabel("posterior value")
+            ax.set_title(vn, fontsize=9)
 
-    # Draw separators between blocks
-    for sep_y in block_boundaries:
-        ax.axhline(sep_y, color="0.7", lw=0.6, ls="-", zorder=0)
-
-    ax.set_yticks(yticks)
-    ax.set_yticklabels(ytick_labels, fontsize=7)
-    ax.invert_yaxis()
-
-    # x-axis label depends on what's plotted
-    has_mu = any(vn.startswith("mu_config") for vn, *_ in blocks)
-    if has_mu:
-        ax.set_xlabel("log EDP")
-    else:
-        ax.axvline(0, color="0.4", lw=0.7, ls="--", zorder=0)
-        ax.set_xlabel("effect (log EDP)")
-
-    ax.grid(True, axis="x", alpha=0.25, lw=0.5, zorder=0)
+        ax.grid(True, axis="x", alpha=0.25, lw=0.5, zorder=0)
 
     ci_pct = int(ci * 100)
-    ax.set_title(f"Posterior {ci_pct}% HDI vs observed data", fontsize=9)
-
-    handles, labs = ax.get_legend_handles_labels()
-    if handles:
-        ax.legend(fontsize=6, loc="lower right")
+    fig.suptitle(f"Posterior {ci_pct}% HDI vs observed data", fontsize=9)
 
     savefig(fig, out_dir, filename, prefix=prefix)
-    return fig, np.array([ax])
+    return fig, axes
