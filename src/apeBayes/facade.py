@@ -1,0 +1,761 @@
+"""
+BayesEpistemicModel — convenience facade.
+
+Wires together data encoding, model building, sampling, posterior access,
+and analysis into one object.  Notebooks call this; internals are
+independently usable.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Literal
+
+import numpy as np
+import pandas as pd
+from arviz import InferenceData
+
+from .config import ModelConfig, PriorConfig, SamplingConfig, FactorSpec
+from .data import EpistemicDataset, encode_dataset
+from .model.flat import FlatConfigModel
+from .model.sampling import sample_model
+from .model.comparison import compare_models, FittedVariant
+from .posterior.accessor import PosteriorAccessor
+from .analysis import bias, variance, decomposition, equivalence, fitted
+from .diagnostics.convergence import (
+    diagnostics_summary,
+    divergences_count,
+    rhat_table,
+    ess_table,
+)
+from .diagnostics.validation import posterior_predictive_check
+
+
+class BayesEpistemicModel:
+    """High-level API for Bayesian epistemic uncertainty analysis.
+
+    Usage
+    -----
+    >>> model = BayesEpistemicModel(df_long, cfg=my_config)
+    >>> model.fit()
+    >>> model.standardized_bias_table()
+    >>> model.variance_budget_table()
+    >>> model.equivalence_probability_table(alpha=0.4)
+    """
+
+    # ── Construction & fitting ───────────────────────────────────────────
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        cfg: ModelConfig | None = None,
+        *,
+        name: str | None = None,
+    ):
+        self.cfg = cfg or ModelConfig()
+        self.name = name
+        self.data: EpistemicDataset = encode_dataset(df, self.cfg)
+        self._posterior: PosteriorAccessor | None = None
+
+    def fit(
+        self,
+        *,
+        builder: FlatConfigModel | None = None,
+        prior_predictive: bool = True,
+        posterior_predictive: bool = True,
+    ) -> "BayesEpistemicModel":
+        """Build and sample the model.
+
+        Parameters
+        ----------
+        builder : ModelBuilder, optional
+            Custom model builder.  Defaults to FlatConfigModel with
+            settings from self.cfg.
+        prior_predictive : bool
+            Sample prior predictive before MCMC.
+        posterior_predictive : bool
+            Sample posterior predictive after MCMC.
+
+        Returns self for chaining.
+        """
+        if builder is None:
+            builder = FlatConfigModel()
+
+        pm_model = builder.build(self.data, self.cfg)
+        idata = sample_model(
+            pm_model,
+            self.cfg.sampling,
+            prior_predictive=prior_predictive,
+            posterior_predictive=posterior_predictive,
+        )
+        self._posterior = PosteriorAccessor(idata, self.data)
+        return self
+
+    @property
+    def posterior(self) -> PosteriorAccessor:
+        if self._posterior is None:
+            raise RuntimeError("Call fit() before accessing the posterior.")
+        return self._posterior
+
+    @property
+    def idata(self) -> InferenceData:
+        return self.posterior.idata
+
+    @property
+    def is_fitted(self) -> bool:
+        return self._posterior is not None
+
+    # ── Serialization ───────────────────────────────────────────────────
+
+    def save(self, path: str | Path) -> Path:
+        """Save the fitted model (InferenceData + dataset metadata) to NetCDF.
+
+        Parameters
+        ----------
+        path : str or Path
+            File path (recommended extension: .nc).
+
+        Returns
+        -------
+        Path to the saved file.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted yet.
+        """
+        path = Path(path)
+        if not self.is_fitted:
+            raise RuntimeError("Cannot save an unfitted model. Call fit() first.")
+        self.idata.to_netcdf(str(path))
+        return path
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        df: pd.DataFrame,
+        cfg: ModelConfig | None = None,
+        *,
+        name: str | None = None,
+    ) -> "BayesEpistemicModel":
+        """Reload a fitted model from a NetCDF file.
+
+        Parameters
+        ----------
+        path : str or Path
+            Path to a .nc file saved by :meth:`save`.
+        df : pd.DataFrame
+            The *same* long-format DataFrame used to fit the model
+            (needed to reconstruct the EpistemicDataset).
+        cfg : ModelConfig, optional
+            Model configuration (must match the one used for fitting).
+        name : str, optional
+            Human-readable model name.
+
+        Returns
+        -------
+        BayesEpistemicModel
+            Fully reconstructed fitted model.
+        """
+        import arviz as az
+
+        path = Path(path)
+        idata = az.from_netcdf(str(path))
+        obj = cls(df, cfg=cfg, name=name)
+        obj._posterior = PosteriorAccessor(idata, obj.data)
+        return obj
+
+    # ── Analysis: bias ───────────────────────────────────────────────────
+
+    def standardized_bias_table(
+        self,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+    ) -> pd.DataFrame:
+        p = self.posterior
+        ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return bias.standardized_bias(
+            p.mu_config(), p.sigma_run(), ref_idx, labels,
+            ci=self.cfg.ci, subset_idx=subset_idx,
+        )
+
+    def standardized_bias_total_table(
+        self,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+    ) -> pd.DataFrame:
+        p = self.posterior
+        ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return bias.standardized_bias_total(
+            p.mu_config(), p.sigma_run(), p.sigma_eps(), ref_idx, labels,
+            ci=self.cfg.ci, nu=p.nu(), subset_idx=subset_idx,
+        )
+
+    def bias_probability_table(
+        self,
+        *,
+        mode: Literal["exceed_band", "within_equiv", "positive"] = "exceed_band",
+        band: float = 1.0,
+        alpha_equiv: float = 0.5,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+    ) -> pd.DataFrame:
+        p = self.posterior
+        ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return bias.bias_probability(
+            p.mu_config(), p.sigma_run(), ref_idx, labels,
+            mode=mode, band=band, alpha_equiv=alpha_equiv,
+            subset_idx=subset_idx,
+        )
+
+    # ── Analysis: variance ───────────────────────────────────────────────
+
+    def variance_budget_table(
+        self,
+        *,
+        include_interaction: bool | None = None,
+    ) -> pd.DataFrame:
+        """Posterior variance budget.
+
+        Parameters
+        ----------
+        include_interaction : bool, optional
+            If True, add a fifth "Interaction Var(γ_sr)" row (requires
+            a v8+ interaction model).  If None (default), include it
+            automatically when the posterior contains ``gamma_sr``.
+            If False, always return the legacy 4-row budget for
+            backward compatibility with v1–v7 pipelines.
+        """
+        p = self.posterior
+        if include_interaction is None:
+            include_interaction = p.has_interaction
+        gamma = p.gamma_sr() if include_interaction else None
+        return variance.variance_budget(
+            p.mu_config(), p.delta_st(), p.sigma_run(), p.sigma_eps(),
+            self.data.config_idx, ci=self.cfg.ci, nu=p.nu(),
+            gamma_sr=gamma,
+        )
+
+    def variance_component_table(
+        self,
+        configs: list[str] | None = None,
+    ) -> pd.DataFrame:
+        p = self.posterior
+        labels = configs or p.config_labels
+        return variance.variance_components(
+            p.sigma_run(), p.sigma_eps(), labels,
+            ci=self.cfg.ci, nu=p.nu(),
+        )
+
+    # ── Analysis: random-slopes parameters (v4+ λ, v8+ σ_inter, v9+ ξ) ──
+
+    def lambda_case_table(self) -> pd.DataFrame:
+        """Posterior summary of per-Case run-sensitivity loadings λ."""
+        p = self.posterior
+        lam = p.lambda_case()
+        if lam is None:
+            raise RuntimeError("No lambda_case in posterior. Fit with RandomSlopesModel or descendant.")
+        case_labels = p.case_labels or [f"Case{i}" for i in range(lam.shape[1])]
+        ci_lo, ci_hi = self.cfg.ci
+        return pd.DataFrame({
+            "Case": case_labels,
+            "lambda_med": np.median(lam, axis=0),
+            "lambda_lo": np.quantile(lam, ci_lo, axis=0),
+            "lambda_hi": np.quantile(lam, ci_hi, axis=0),
+        })
+
+    def xi_case_table(self) -> pd.DataFrame:
+        """Posterior summary of per-Case interaction-sensitivity loadings ξ."""
+        p = self.posterior
+        xi = p.xi_case()
+        if xi is None:
+            raise RuntimeError("No xi_case in posterior. Fit with RandomSlopesInteractionModel(interaction_loading=True).")
+        case_labels = p.case_labels or [f"Case{i}" for i in range(xi.shape[1])]
+        ci_lo, ci_hi = self.cfg.ci
+        return pd.DataFrame({
+            "Case": case_labels,
+            "xi_med": np.median(xi, axis=0),
+            "xi_lo": np.quantile(xi, ci_lo, axis=0),
+            "xi_hi": np.quantile(xi, ci_hi, axis=0),
+        })
+
+    def sigma_inter_table(self) -> pd.DataFrame:
+        """Posterior summary of the station×rupture interaction scale σ_inter."""
+        p = self.posterior
+        sig = p.sigma_inter()
+        if sig is None:
+            raise RuntimeError("No sigma_inter in posterior. Fit with RandomSlopesInteractionModel.")
+        ci_lo, ci_hi = self.cfg.ci
+        return pd.DataFrame({
+            "component": ["sigma_inter"],
+            "med": [float(np.median(sig))],
+            "lo": [float(np.quantile(sig, ci_lo))],
+            "hi": [float(np.quantile(sig, ci_hi))],
+        })
+
+    def sigma_rupture_table(self) -> pd.DataFrame:
+        """Posterior summary of σ_run (named sigma_rupture for paper clarity)."""
+        p = self.posterior
+        sig = p.sigma_run()
+        ci_lo, ci_hi = self.cfg.ci
+        return pd.DataFrame({
+            "component": ["sigma_run"],
+            "med": [float(np.median(sig))],
+            "lo": [float(np.quantile(sig, ci_lo))],
+            "hi": [float(np.quantile(sig, ci_hi))],
+        })
+
+    # ── Analysis: decomposition ──────────────────────────────────────────
+
+    def axiswise_decomposition_table(
+        self,
+        *,
+        ratio_mode: Literal["var_over_sigma", "var_over_sigma2"] = "var_over_sigma",
+    ) -> pd.DataFrame:
+        p = self.posterior
+        f0_levels, f1_levels, grid = self.data.factor_index_grid()
+        decomp = decomposition.axiswise_decomposition_draws(
+            p.mu_config(), f0_levels, f1_levels, grid, p.sigma_run(),
+        )
+        return decomposition.axiswise_table(
+            decomp, ci=self.cfg.ci, ratio_mode=ratio_mode,
+            factor_names=(self.cfg.factors[0].name, self.cfg.factors[1].name),
+        )
+
+    def level_ranking_tables(
+        self,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        p = self.posterior
+        f0_levels, f1_levels, grid = self.data.factor_index_grid()
+        decomp = decomposition.axiswise_decomposition_draws(
+            p.mu_config(), f0_levels, f1_levels, grid, p.sigma_run(),
+        )
+        return decomposition.level_ranking_tables(
+            decomp, ci=self.cfg.ci,
+            factor_names=(self.cfg.factors[0].name, self.cfg.factors[1].name),
+        )
+
+    # ── Analysis: equivalence ────────────────────────────────────────────
+
+    def equivalence_probability_table(
+        self,
+        *,
+        alpha: float = 0.5,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+    ) -> pd.DataFrame:
+        p = self.posterior
+        ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return equivalence.equivalence_probability(
+            p.mu_config(), p.sigma_run(), ref_idx, labels,
+            alpha=alpha, ci=self.cfg.ci, subset_idx=subset_idx,
+        )
+
+    def equivalence_sweep_table(
+        self,
+        *,
+        alphas: np.ndarray | None = None,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+    ) -> pd.DataFrame:
+        p = self.posterior
+        ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return equivalence.equivalence_sweep(
+            p.mu_config(), p.sigma_run(), ref_idx, labels,
+            alphas=alphas, subset_idx=subset_idx,
+        )
+
+    def epistemic_equivalence_matrix(
+        self,
+        *,
+        alpha: float = 0.5,
+        configs: list[str] | None = None,
+    ) -> tuple[list[str], np.ndarray]:
+        p = self.posterior
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return equivalence.epistemic_equivalence_matrix(
+            p.mu_config(), p.sigma_run(),
+            alpha=alpha, labels=labels, subset_idx=subset_idx,
+        )
+
+    def epistemic_clusters_table(
+        self,
+        *,
+        alpha: float = 0.5,
+        configs: list[str] | None = None,
+        method: str = "average",
+        threshold: float | None = None,
+        n_clusters: int | None = None,
+    ) -> pd.DataFrame:
+        p = self.posterior
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return equivalence.epistemic_clusters(
+            p.mu_config(), p.sigma_run(),
+            alpha=alpha, labels=labels, subset_idx=subset_idx,
+            method=method, threshold=threshold, n_clusters=n_clusters,
+        )
+
+    # ── Analysis: fitted values ──────────────────────────────────────────
+
+    def fitted_values(self) -> pd.DataFrame:
+        p = self.posterior
+        return fitted.posterior_mean_fitted(
+            self.data.y, p.mu0(), p.mu_config(), p.delta_st(), p.b_run(),
+            self.data.config_idx, self.data.station_idx, self.data.run_idx,
+        )
+
+    def r2_table(self) -> pd.DataFrame:
+        p = self.posterior
+        return fitted.posterior_r2(
+            self.data.y, p.mu0(), p.mu_config(), p.delta_st(), p.b_run(),
+            self.data.config_idx, self.data.station_idx, self.data.run_idx,
+            ci=self.cfg.ci,
+        )
+
+    def mu_hat_table(self, configs: list[str] | None = None) -> pd.DataFrame:
+        p = self.posterior
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return fitted.mu_hat_table(
+            p.mu0(), p.mu_config(), labels, ci=self.cfg.ci, subset_idx=subset_idx,
+        )
+
+    def delta_hat_table(self) -> pd.DataFrame:
+        p = self.posterior
+        return fitted.delta_hat_table(p.delta_st(), p.station_labels, ci=self.cfg.ci)
+
+    # ── Diagnostics ──────────────────────────────────────────────────────
+
+    def diagnostics_summary(self, var_names: list[str] | None = None) -> pd.DataFrame:
+        return diagnostics_summary(self.idata, var_names)
+
+    def divergences_count(self) -> int:
+        return divergences_count(self.idata)
+
+    def rhat_table(self, **kwargs) -> pd.DataFrame:
+        return rhat_table(self.idata, **kwargs)
+
+    def ess_table(self, **kwargs) -> pd.DataFrame:
+        return ess_table(self.idata, **kwargs)
+
+    def posterior_predictive_check(self) -> pd.DataFrame:
+        p = self.posterior
+        y_rep = p.y_rep()
+        if y_rep is None:
+            raise RuntimeError(
+                "No posterior predictive samples. "
+                "Refit with posterior_predictive=True."
+            )
+        return posterior_predictive_check(
+            self.data.y, y_rep,
+            config_idx=self.data.config_idx,
+            config_labels=p.config_labels,
+        )
+
+    # ── Plots ───────────────────────────────────────────────────────────
+
+    def plot_rhat_bar(self, **kw):
+        from .plots.diagnostics import plot_rhat_bar as _plot
+        return _plot(self.rhat_table(), **kw)
+
+    def plot_ess_bar(self, kind: str = "bulk", **kw):
+        from .plots.diagnostics import plot_ess_bar as _plot
+        return _plot(self.ess_table(), kind=kind, **kw)
+
+    def plot_mu_triptych(self, ref: str | None = None, **kw):
+        ref = ref or self.data.ref_label
+        mu_hat = self.mu_hat_table()
+        bias_df = self.standardized_bias_table()
+        from .plots.bias import plot_mu_triptych as _plot
+        return _plot(mu_hat, bias_df, ref=ref, **kw)
+
+    def plot_bias_forest(self, **kw):
+        bias_df = self.standardized_bias_table()
+        from .plots.bias import plot_bias_forest as _plot
+        return _plot(bias_df, ref_label=self.data.ref_label, **kw)
+
+    def plot_standardized_bias(self, station_subplots: bool = False, **kw):
+        bias_df = self.standardized_bias_table()
+        from .plots.bias import plot_standardized_bias as _plot
+
+        # Compute full posterior beta_draws if not supplied by caller
+        if "beta_draws" not in kw:
+            p = self.posterior
+            mu_config = p.mu_config()         # (S, K)
+            sigma_run = p.sigma_run()          # (S,)
+            ref_idx = list(self.data.config_labels).index(self.data.ref_label)
+            ref_draws = mu_config[:, ref_idx]  # (S,)
+            beta_all = (mu_config - ref_draws[:, None]) / sigma_run[:, None]
+            kw["beta_draws"] = beta_all
+            kw["beta_labels"] = list(self.data.config_labels)
+
+        return _plot(bias_df, station_subplots=station_subplots,
+                     ref_label=self.data.ref_label, **kw)
+
+    def plot_radar_bias_probability(self, alpha: float = 0.5, **kw):
+        equiv_df = self.equivalence_probability_table(alpha=alpha)
+        from .plots.bias import plot_radar_bias_probability as _plot
+        return _plot(equiv_df, alpha=alpha, ref=self.data.ref_label, **kw)
+
+    def plot_bias_ridgeplot(self, station_subplots: bool = False, **kw):
+        p = self.posterior
+        from .plots.bias import plot_bias_ridgeplot as _plot
+        extra = {}
+        if station_subplots:
+            extra = dict(
+                y_obs=self.data.y,
+                config_idx=self.data.config_idx,
+                station_idx=self.data.station_idx,
+                station_labels=list(self.data.station_labels),
+            )
+        return _plot(
+            p.mu_config(), p.sigma_run(),
+            p.config_labels, p.ref_idx,
+            **extra, **kw,
+        )
+
+    def plot_bias_probability(self, **kw):
+        prob_df = self.bias_probability_table(**{
+            k: kw.pop(k) for k in list(kw) if k in ("mode", "band", "alpha_equiv", "ref", "configs")
+        })
+        from .plots.bias import plot_bias_probability as _plot
+        return _plot(prob_df, **kw)
+
+    def plot_variance_budget(self, **kw):
+        vb = self.variance_budget_table()
+        from .plots.variance import plot_variance_budget_bars as _plot
+        return _plot(vb, **kw)
+
+    def plot_variance_budget_waterfall(self, **kw):
+        vb = self.variance_budget_table()
+        from .plots.variance import plot_variance_budget_waterfall as _plot
+        return _plot(vb, **kw)
+
+    def plot_variance_components(self, **kw):
+        vc = self.variance_component_table()
+        from .plots.variance import plot_variance_components as _plot
+        return _plot(vc, **kw)
+
+    def plot_decomposition_bars(self, **kw):
+        decomp = self.axiswise_decomposition_table()
+        from .plots.variance import plot_decomposition_bars as _plot
+        return _plot(decomp, **kw)
+
+    def plot_sigma_stability(self, **kw):
+        vc = self.variance_component_table()
+        p = self.posterior
+        sigma_run_draws = p.sigma_run()
+        sigma_run_med = float(np.median(sigma_run_draws))
+        from .plots.variance import plot_sigma_stability as _plot
+        return _plot(vc, sigma_run_med=sigma_run_med, **kw)
+
+    def plot_equivalence_matrix(self, alpha: float = 0.5, **kw):
+        labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
+        from .plots.equivalence import plot_equivalence_matrix as _plot
+        return _plot(labels, P_mat, alpha=alpha, **kw)
+
+    def plot_equivalence_matrix_with_dendrogram(self, alpha: float = 0.5, **kw):
+        labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
+        from .plots.equivalence import plot_equivalence_matrix_with_dendrogram as _plot
+        return _plot(labels, P_mat, alpha=alpha, **kw)
+
+    def plot_equivalence_dendrogram(self, alpha: float = 0.5, **kw):
+        labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
+        from .plots.equivalence import plot_equivalence_dendrogram as _plot
+        return _plot(labels, P_mat, alpha=alpha, **kw)
+
+    def plot_equivalence_sweep(self, **kw):
+        sweep = self.equivalence_sweep_table()
+        from .plots.equivalence import plot_equivalence_sweep as _plot
+        return _plot(sweep, **kw)
+
+    def plot_equivalence_bars_plus_sweep(self, alpha: float = 0.5, **kw):
+        equiv = self.equivalence_probability_table(alpha=alpha)
+        alphas = kw.pop("alphas", None)
+        sweep = self.equivalence_sweep_table(alphas=alphas)
+        from .plots.equivalence import plot_equivalence_bars_plus_sweep as _plot
+        return _plot(equiv, sweep, alpha=alpha, **kw)
+
+    # ── Interaction plots (v8+, v9+) ─────────────────────────────────────
+
+    def plot_interaction_heatmap(self, **kw):
+        """Heatmap of the shared station×rupture interaction γ_sr.
+
+        Requires a v8+ interaction model in the posterior.
+        """
+        p = self.posterior
+        if not p.has_interaction:
+            raise RuntimeError(
+                "Posterior has no 'gamma_sr'. Fit with "
+                "RandomSlopesInteractionModel (v8+) to use this plot."
+            )
+        from .plots.interaction import plot_interaction_heatmap as _plot
+        return _plot(
+            p.gamma_sr(),
+            list(self.data.station_labels),
+            list(self.data.run_labels),
+            **kw,
+        )
+
+    def plot_interaction_by_case(self, **kw):
+        """Per-Case panel of effective interactions ξ_case·γ_sr.
+
+        Works for both v8 (ξ absent → ξ=1 for all Cases) and v9
+        (ξ present → loaded panels).  This is the v9 hero figure.
+        """
+        p = self.posterior
+        if not p.has_interaction:
+            raise RuntimeError(
+                "Posterior has no 'gamma_sr'. Fit with "
+                "RandomSlopesInteractionModel (v8+) to use this plot."
+            )
+        case_labels = p.case_labels
+        if case_labels is None:
+            # Fallback: read from factor spec
+            case_labels = list(self.data.factor_levels[
+                self.cfg.factors[1].name
+            ])
+        from .plots.interaction import plot_interaction_by_case as _plot
+        return _plot(
+            p.gamma_sr(),
+            case_labels,
+            list(self.data.station_labels),
+            list(self.data.run_labels),
+            xi_case_draws=p.xi_case(),  # None for v8, (S, n_cases) for v9
+            **kw,
+        )
+
+    def plot_interaction_forest(self, **kw):
+        """Forest plot of γ_sr cells with credible intervals.
+
+        Requires a v8+ interaction model in the posterior.
+        """
+        p = self.posterior
+        if not p.has_interaction:
+            raise RuntimeError(
+                "Posterior has no 'gamma_sr'. Fit with "
+                "RandomSlopesInteractionModel (v8+) to use this plot."
+            )
+        labels = p.station_run_labels
+        if labels is None:
+            # Fallback: reconstruct from data
+            labels = [
+                f"{s}|{r}"
+                for s in self.data.station_labels
+                for r in self.data.run_labels
+            ]
+        from .plots.interaction import plot_interaction_forest as _plot
+        return _plot(p.gamma_sr(), labels, **kw)
+
+    def plot_station_posteriors(self, **kw):
+        p = self.posterior
+        from .plots.posterior import plot_station_posteriors as _plot
+        return _plot(p.delta_st(), p.station_labels, **kw)
+
+    def plot_observed_vs_predicted(self, **kw):
+        p = self.posterior
+        fv = self.fitted_values()
+        from .plots.posterior import plot_observed_vs_predicted as _plot
+        return _plot(
+            self.data.y, fv["yhat_with_run"].to_numpy(),
+            config_idx=self.data.config_idx,
+            config_labels=p.config_labels,
+            **kw,
+        )
+
+    def plot_mu_density(self, **kw):
+        p = self.posterior
+        from .plots.posterior import plot_mu_density as _plot
+        return _plot(p.mu0(), p.mu_config(), p.config_labels, **kw)
+
+    def plot_ppc(self, **kw):
+        ppc_df = self.posterior_predictive_check()
+        from .plots.posterior import plot_ppc as _plot
+        return _plot(ppc_df, **kw)
+
+    def plot_residuals(self, **kw):
+        fv = self.fitted_values()
+        from .plots.posterior import plot_residuals as _plot
+        return _plot(fv, **kw)
+
+    def plot_raw_data(self, **kw):
+        from .plots.posterior import plot_raw_data as _plot
+        return _plot(
+            self.data.y,
+            self.data.config_idx,
+            list(self.data.config_labels),
+            self.data.station_idx,
+            list(self.data.station_labels),
+            **kw,
+        )
+
+    def plot_ppc_density(self, **kw):
+        p = self.posterior
+        y_rep = p.y_rep()
+        if y_rep is None:
+            raise RuntimeError(
+                "No posterior predictive samples. "
+                "Refit with posterior_predictive=True."
+            )
+        from .plots.posterior import plot_ppc_density as _plot
+        return _plot(self.data.y, y_rep, **kw)
+
+    def plot_trace(self, **kw):
+        from .plots.posterior import plot_trace as _plot
+        return _plot(self.idata, **kw)
+
+    def plot_pair(self, **kw):
+        from .plots.posterior import plot_pair as _plot
+        return _plot(self.idata, **kw)
+
+    def plot_forest_arviz(self, **kw):
+        from .plots.posterior import plot_forest_arviz as _plot
+        d = self.data
+        kw.setdefault("observed_y", d.y)
+        kw.setdefault("config_idx", d.config_idx)
+        kw.setdefault("station_idx", d.station_idx)
+        kw.setdefault("run_idx", d.run_idx)
+        kw.setdefault("config_labels", list(d.config_labels))
+        kw.setdefault("station_labels", list(d.station_labels))
+        return _plot(self.idata, **kw)
+
+    # ── Model comparison ─────────────────────────────────────────────────
+
+    def compare_variants(
+        self,
+        *,
+        ic: str = "loo",
+    ) -> tuple[pd.DataFrame, dict[str, FittedVariant]]:
+        """Compare Student-t/Gaussian × hetero/homo variants.
+
+        Returns the ArviZ comparison table and all fitted variants.
+        """
+        variants = {
+            "StudentT_hetero": FlatConfigModel(likelihood="student_t", heteroskedastic=True),
+            "Gaussian_hetero": FlatConfigModel(likelihood="gaussian", heteroskedastic=True),
+            "StudentT_homo": FlatConfigModel(likelihood="student_t", heteroskedastic=False),
+            "Gaussian_homo": FlatConfigModel(likelihood="gaussian", heteroskedastic=False),
+        }
+        return compare_models(self.data, variants, self.cfg, ic=ic)
+
+    # ── Repr ─────────────────────────────────────────────────────────────
+
+    def __repr__(self) -> str:
+        status = "fitted" if self.is_fitted else "not fitted"
+        name_str = f" ({self.name})" if self.name else ""
+        return (
+            f"BayesEpistemicModel{name_str} [{status}]\n"
+            f"  configs: {self.data.n_configs}, "
+            f"stations: {self.data.n_stations}, "
+            f"runs: {self.data.n_runs}, "
+            f"obs: {self.data.n_obs}\n"
+            f"  factors: {self.cfg.factor_names}\n"
+            f"  ref: {self.data.ref_label}\n"
+            f"  likelihood: {self.cfg.likelihood}, "
+            f"hetero: {self.cfg.heteroskedastic}"
+        )

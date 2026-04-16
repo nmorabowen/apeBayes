@@ -1,0 +1,351 @@
+"""
+Random-slopes model with per-Case run-sensitivity loadings.
+
+Extends the hierarchical model (learned τ_config) by replacing the
+shared run effect b_run[r] with λ_case[c(k)] · b_run[r], where λ_case
+is a per-Case multiplicative loading.  The reference Case is anchored
+at λ = 1 for identifiability with σ_run.
+
+Physics motivation:
+  - Linear models (Case A) respond proportionally to ground-motion
+    intensity → high run sensitivity → λ_A > 1
+  - Nonlinear models (Case D) dissipate energy → consistent response
+    across ground motions → λ_D ≈ 1
+
+This resolves the PPC p(sd) issue in v1–v3 where:
+  - A configs had p(sd) ≈ 1.0 (model overestimates variability)
+  - D configs had p(sd) ≈ 0.05 (model underestimates variability)
+
+Model:
+  y_i = μ₀ + μ_config[k] + δ_station[j] + λ_case[c(k)] · b_run[r] + ε_i
+
+  μ_config[k] ~ Normal(0, τ_config)    [hierarchical, non-centered]
+  τ_config    ~ HalfNormal(σ_τ)
+  b_run[r]    ~ Normal(0, σ_run)        [non-centered or centered]
+  λ_case[c]   = exp(log_λ[c])           [log_λ_ref = 0 fixed]
+  log_λ_free  ~ Normal(0, σ_λ)          [default σ_λ = 0.5]
+
+Run parameterization:
+  Non-centered (default): z_run ~ N(0,1), b_run = σ_run · z_run
+    → sampler sees σ_run × z_run × λ_case (three-way product, slow mixing)
+  Centered (centered_runs=True): b_run_free ~ N(0, σ_run) directly
+    → sampler sees λ_case × b_run (two-way product, faster mixing)
+  Use centered when λ_case is in the model to avoid the σ_run–λ ridge.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pymc as pm
+
+from ..config import ModelConfig
+from ..data import EpistemicDataset
+
+
+class RandomSlopesModel:
+    """Build a hierarchical model with per-Case run-sensitivity loadings.
+
+    Parameters
+    ----------
+    sigma_lambda : float
+        Prior SD for log(λ_case).  Default 0.5 → prior 95% range for λ
+        is roughly [0.37, 2.72], wide enough for the expected range.
+    centered_runs : bool
+        If True, use centered parameterization for run effects:
+        b_run_free ~ N(0, σ_run) directly instead of z_run ~ N(0,1),
+        b_run = σ_run · z_run.  This eliminates the three-way product
+        σ_run × z_run × λ_case that causes slow mixing in the
+        non-centered version.  Default False (non-centered, for backward
+        compatibility with v4).
+    likelihood : {"student_t", "gaussian"}, optional
+        Override ``cfg.likelihood`` if provided.
+    heteroskedastic : bool, optional
+        Override ``cfg.heteroskedastic`` if provided.
+    """
+
+    def __init__(
+        self,
+        *,
+        sigma_lambda: float = 0.5,
+        centered_runs: bool = False,
+        likelihood: str | None = None,
+        heteroskedastic: bool | None = None,
+    ):
+        if sigma_lambda <= 0:
+            raise ValueError(f"sigma_lambda must be positive, got {sigma_lambda}")
+        self._sigma_lambda = sigma_lambda
+        self._centered_runs = centered_runs
+        self._likelihood_override = likelihood
+        self._hetero_override = heteroskedastic
+
+    @property
+    def description(self) -> str:
+        parts = [f"σ_λ={self._sigma_lambda}"]
+        if self._centered_runs:
+            parts.append("centered")
+        lik = self._likelihood_override or "config"
+        het = self._hetero_override
+        if lik != "config":
+            parts.append(lik)
+        if het is not None:
+            parts.append("hetero" if het else "homo")
+        return f"RandomSlopes({', '.join(parts)})"
+
+    @staticmethod
+    def _build_case_mapping(
+        data: EpistemicDataset,
+        cfg: ModelConfig,
+    ) -> tuple[list[str], np.ndarray, np.ndarray, int]:
+        """Extract Case-level info from the factorial structure.
+
+        Returns
+        -------
+        case_levels : list[str]
+            Ordered Case labels (e.g. ["A", "B", "C", "D"]).
+        config_to_case : np.ndarray, shape (n_configs,)
+            Maps config index → Case integer index.
+        case_idx_obs : np.ndarray, shape (n_obs,)
+            Case integer index for each observation.
+        ref_case_idx : int
+            Index of the reference Case in case_levels.
+        """
+        if len(cfg.factors) != 2:
+            raise ValueError(
+                "RandomSlopesModel requires exactly 2 factors "
+                f"(SSI, Nonlinearity), got {len(cfg.factors)}."
+            )
+        # Factor[1] is Nonlinearity / Case
+        case_factor = cfg.factors[1]
+        case_levels = data.factor_levels[case_factor.name]
+        n_cases = len(case_levels)
+        case_level_to_idx = {c: i for i, c in enumerate(case_levels)}
+
+        # Map each config to its Case
+        config_to_case = np.zeros(data.n_configs, dtype=int)
+        for combo_tuple, cfg_idx in data.factor_grid.items():
+            case_str = str(combo_tuple[1])  # second factor = Case
+            config_to_case[cfg_idx] = case_level_to_idx[case_str]
+
+        # Per-observation case index
+        case_idx_obs = config_to_case[data.config_idx]
+
+        # Reference case: extract from ref_config label
+        ref_label = data.config_labels[data.ref_idx]
+        # In the factor_grid, find the combo for ref_config
+        ref_case_str = None
+        for combo_tuple, cfg_idx in data.factor_grid.items():
+            if cfg_idx == data.ref_idx:
+                ref_case_str = str(combo_tuple[1])
+                break
+        if ref_case_str is None:
+            raise ValueError(f"Could not find reference config {ref_label} in factor grid.")
+        ref_case_idx = case_level_to_idx[ref_case_str]
+
+        return case_levels, config_to_case, case_idx_obs, ref_case_idx
+
+    def build(
+        self,
+        data: EpistemicDataset,
+        cfg: ModelConfig,
+    ) -> pm.Model:
+        """Construct the PyMC model with hierarchical config + random slopes."""
+        p = cfg.priors
+        likelihood = self._likelihood_override or cfg.likelihood
+        hetero = (
+            self._hetero_override
+            if self._hetero_override is not None
+            else cfg.heteroskedastic
+        )
+
+        # ── Case-level mapping ──────────────────────────────────────────
+        case_levels, config_to_case, case_idx_obs, ref_case_idx = (
+            self._build_case_mapping(data, cfg)
+        )
+        n_cases = len(case_levels)
+
+        coords = data.coords_dict()
+        coords["Case"] = case_levels
+        # Free cases: all except reference
+        free_case_labels = [c for i, c in enumerate(case_levels) if i != ref_case_idx]
+        coords["Case_free"] = free_case_labels
+
+        with pm.Model(coords=coords) as model:
+
+            # ── Intercept ────────────────────────────────────────────────
+            mu0 = pm.Normal("mu0", mu=0.0, sigma=p.sigma_intercept)
+
+            # ── Hierarchical config-effect scale ─────────────────────────
+            tau_config = pm.HalfNormal("tau_config", sigma=p.sigma_config)
+
+            # ── Configuration effects (sum-to-zero, non-centered) ────────
+            n_cfg = data.n_configs
+            if n_cfg > 1:
+                z_config_free = pm.Normal(
+                    "z_config_free",
+                    mu=0.0,
+                    sigma=1.0,
+                    dims="Config_free",
+                )
+                z_config_last = -pm.math.sum(z_config_free)
+                z_config = pm.math.concatenate([z_config_free, z_config_last[None]])
+                mu_config = pm.Deterministic(
+                    "mu_config",
+                    tau_config * z_config,
+                    dims="Config",
+                )
+            else:
+                mu_config = pm.Deterministic(
+                    "mu_config",
+                    pm.math.zeros((1,)),
+                    dims="Config",
+                )
+
+            # ── Station effects (sum-to-zero) ────────────────────────────
+            n_st = data.n_stations
+            if n_st > 1:
+                delta_free = pm.Normal(
+                    "delta_st_free",
+                    mu=0.0,
+                    sigma=p.sigma_station,
+                    dims="Station_free",
+                )
+                delta_last = -pm.math.sum(delta_free)
+                delta_st = pm.Deterministic(
+                    "delta_st",
+                    pm.math.concatenate([delta_free, delta_last[None]]),
+                    dims="Station",
+                )
+            else:
+                delta_st = pm.Deterministic(
+                    "delta_st",
+                    pm.math.zeros((1,)),
+                    dims="Station",
+                )
+
+            # ── Run random effects (sum-to-zero) ────────────────────────
+            sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_run)
+            n_rk = data.n_runs
+            if n_rk > 1:
+                if self._centered_runs:
+                    # Centered: b_run_free ~ N(0, σ_run) directly.
+                    # Eliminates the σ_run × z_run product that creates
+                    # a ridge with λ_case in the non-centered version.
+                    b_run_free = pm.Normal(
+                        "b_run_free",
+                        mu=0.0,
+                        sigma=sigma_run,
+                        dims="Run_free",
+                    )
+                    b_run_last = -pm.math.sum(b_run_free)
+                    b_run = pm.Deterministic(
+                        "b_run",
+                        pm.math.concatenate([b_run_free, b_run_last[None]]),
+                        dims="Run",
+                    )
+                else:
+                    # Non-centered: z ~ N(0,1), b = σ_run · z
+                    z_run_free = pm.Normal(
+                        "z_run_free",
+                        mu=0.0,
+                        sigma=1.0,
+                        dims="Run_free",
+                    )
+                    z_run_last = -pm.math.sum(z_run_free)
+                    z_run = pm.math.concatenate([z_run_free, z_run_last[None]])
+                    b_run = pm.Deterministic(
+                        "b_run",
+                        sigma_run * z_run,
+                        dims="Run",
+                    )
+            else:
+                b_run = pm.Deterministic(
+                    "b_run",
+                    pm.math.zeros((1,)),
+                    dims="Run",
+                )
+
+            # ── Per-Case run-sensitivity loadings (random slopes) ────────
+            # log(λ) parameterization: log_λ_ref = 0 (fixed), others free
+            if n_cases > 1:
+                log_lambda_free = pm.Normal(
+                    "log_lambda_free",
+                    mu=0.0,
+                    sigma=self._sigma_lambda,
+                    dims="Case_free",
+                )
+                # Insert log_λ = 0 at the reference position
+                if ref_case_idx == 0:
+                    log_lambda = pm.math.concatenate(
+                        [pm.math.zeros((1,)), log_lambda_free]
+                    )
+                elif ref_case_idx == n_cases - 1:
+                    log_lambda = pm.math.concatenate(
+                        [log_lambda_free, pm.math.zeros((1,))]
+                    )
+                else:
+                    log_lambda = pm.math.concatenate([
+                        log_lambda_free[:ref_case_idx],
+                        pm.math.zeros((1,)),
+                        log_lambda_free[ref_case_idx:],
+                    ])
+
+                lambda_case = pm.Deterministic(
+                    "lambda_case",
+                    pm.math.exp(log_lambda),
+                    dims="Case",
+                )
+            else:
+                lambda_case = pm.Deterministic(
+                    "lambda_case",
+                    pm.math.ones((1,)),
+                    dims="Case",
+                )
+
+            # ── Residual SD ──────────────────────────────────────────────
+            if hetero:
+                sigma_eps_config = pm.HalfNormal(
+                    "sigma_eps_config",
+                    sigma=p.sigma_eps,
+                    dims="Config",
+                )
+                sigma_obs = sigma_eps_config[data.config_idx]
+            else:
+                sigma_eps = pm.HalfNormal("sigma_eps", sigma=p.sigma_eps)
+                sigma_obs = sigma_eps
+
+            # ── Linear predictor ─────────────────────────────────────────
+            # Key change: run effect scaled by per-Case loading
+            mu = (
+                mu0
+                + mu_config[data.config_idx]
+                + delta_st[data.station_idx]
+                + lambda_case[case_idx_obs] * b_run[data.run_idx]
+            )
+
+            # ── Likelihood ───────────────────────────────────────────────
+            if likelihood == "student_t":
+                nu_minus2 = pm.Exponential(
+                    "nu_minus2",
+                    lam=1.0 / p.nu_prior_lambda,
+                )
+                nu = nu_minus2 + 2.0
+                pm.StudentT(
+                    "y_obs",
+                    nu=nu,
+                    mu=mu,
+                    sigma=sigma_obs,
+                    observed=data.y,
+                    dims="obs_id",
+                )
+            elif likelihood == "gaussian":
+                pm.Normal(
+                    "y_obs",
+                    mu=mu,
+                    sigma=sigma_obs,
+                    observed=data.y,
+                    dims="obs_id",
+                )
+            else:
+                raise ValueError(f"Unknown likelihood: {likelihood!r}")
+
+        return model
