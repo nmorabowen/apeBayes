@@ -55,6 +55,20 @@ def parse_tier_case(label: str) -> tuple[int, str] | None:
     return int(m.group(1)), m.group(2)
 
 
+def case_color(label: str, fallback: str = "#3C3C3C") -> str:
+    """Return the CASE_COLORS colour for a config label like '4D' → 'D' → SAGE."""
+    from .style import CASE_COLORS, CHARCOAL
+    tc = parse_tier_case(str(label))
+    if tc is None:
+        return fallback
+    return CASE_COLORS.get(tc[1], fallback)
+
+
+def case_colors_for_labels(labels: list[str]) -> list[str]:
+    """Return a list of Case-based colours aligned with *labels*."""
+    return [case_color(lbl) for lbl in labels]
+
+
 def add_tier_case_columns(df: pd.DataFrame, col: str = "Config") -> pd.DataFrame:
     """Add 'Tier' and 'Case' integer/string columns from a TierCase column."""
     tc = df[col].astype(str)

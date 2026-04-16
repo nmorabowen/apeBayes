@@ -20,6 +20,8 @@ from .helpers import (
     safe_log_pos,
     savefig,
     ensure_dir,
+    case_color,
+    case_colors_for_labels,
 )
 from .style import CMAP_DIV, PALETTE, FULL_WIDTH, HALF_WIDTH
 
@@ -204,7 +206,7 @@ def _draw_ridges(
         density = density / density.max() * spacing * (1 + overlap)
 
         baseline = row * spacing
-        color = PALETTE[row % len(PALETTE)]
+        color = case_color(lbl)
 
         ax.fill_between(x_grid, baseline, baseline + density,
                         alpha=0.35, color=color, zorder=n - row)
@@ -294,7 +296,7 @@ def plot_bias_ridgeplot(
                 ax.scatter(
                     beta_obs, baseline + jitter,
                     s=18, marker="d", edgecolors="0.2", linewidths=0.4,
-                    facecolors=PALETTE[row % len(PALETTE)], alpha=0.8,
+                    facecolors=case_color(lbl), alpha=0.8,
                     zorder=n + 10,
                 )
 
@@ -563,8 +565,10 @@ def plot_radar_bias_probability(
     angles_closed = angles + [angles[0]]
 
     fig, ax = plt.subplots(figsize=figsize, subplot_kw={"projection": "polar"})
-    ax.plot(angles_closed, vals_closed, "o-", lw=1.4, ms=3, color=PALETTE[0])
+    spoke_colors = case_colors_for_labels(labels)
+    ax.plot(angles_closed, vals_closed, "-", lw=1.2, color=PALETTE[0], alpha=0.5)
     ax.fill(angles_closed, vals_closed, alpha=fill_alpha, color=PALETTE[0])
+    ax.scatter(angles, vals, c=spoke_colors, s=25, zorder=5, edgecolors="white", linewidths=0.4)
 
     ax.set_xticks(angles)
     ax.set_xticklabels(labels, fontsize=7)

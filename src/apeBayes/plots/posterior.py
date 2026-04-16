@@ -19,7 +19,7 @@ from .helpers import (
     edp_axis_label,
     order_config_labels,
 )
-from .style import PALETTE, FULL_WIDTH, HALF_WIDTH
+from .style import PALETTE, FULL_WIDTH, HALF_WIDTH, NAVY, TEAL, STEEL
 
 
 # ── HDI helper ────────────────────────────────────────────────────────
@@ -178,9 +178,9 @@ def plot_ppc(
     fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
     w = 0.35
     ax.barh(y + w / 2, ppc_df["p_value_sd"], w,
-            label="p(sd)", color=PALETTE[1])
+            label="p(sd)", color=TEAL)
     ax.barh(y - w / 2, ppc_df["p_value_mean"], w,
-            label="p(mean)", color=PALETTE[0])
+            label="p(mean)", color=NAVY)
 
     ax.axvline(0.5, ls="--", lw=0.6, color="0.5")
     ax.set_yticks(y)

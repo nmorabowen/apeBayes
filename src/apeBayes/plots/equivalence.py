@@ -13,7 +13,7 @@ import seaborn as sns
 from scipy.cluster.hierarchy import linkage, dendrogram, set_link_color_palette
 from scipy.spatial.distance import squareform
 
-from .helpers import savefig, ensure_dir, order_config_labels
+from .helpers import savefig, ensure_dir, order_config_labels, case_color, case_colors_for_labels
 from .style import CMAP_SEQ, CMAP_DIV, PALETTE, FULL_WIDTH, HALF_WIDTH
 
 
@@ -106,7 +106,7 @@ def plot_equivalence_sweep(
     for i, cfg in enumerate(configs):
         sub = sweep_df[sweep_df[label_col] == cfg].sort_values("alpha")
         ax.plot(sub["alpha"], sub["P_equiv"],
-                label=cfg, color=PALETTE[i % len(PALETTE)], lw=1.4)
+                label=cfg, color=case_color(cfg), lw=1.4)
 
     ax.set_xlabel(r"Threshold $\alpha$")
     ax.set_ylabel(r"$P(|\Delta\mu| < \alpha\,\sigma_{\mathrm{run}})$")
@@ -127,7 +127,7 @@ def plot_equivalence_matrix_with_dendrogram(
     cluster_order: bool = True,
     annot: bool = True,
     fmt: str = ".2f",
-    figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+    figsize: tuple[float, float] = (FULL_WIDTH, 5.0),
     cmap: str = CMAP_SEQ,
     out_dir: str | Path | None = None,
     prefix: str = "",
@@ -219,7 +219,7 @@ def plot_equivalence_bars_plus_sweep(
     vals = df_bar[prob_col].to_numpy(dtype=float)
 
     ax = axes[0]
-    colors = [PALETTE[i % len(PALETTE)] for i in range(len(labels_list))]
+    colors = case_colors_for_labels(labels_list)
     ax.bar(x, vals, color=colors, edgecolor="white", lw=0.4, alpha=0.85)
     ax.set_xticks(x)
     ax.set_xticklabels(labels_list, rotation=45, ha="right", fontsize=7)
@@ -233,7 +233,7 @@ def plot_equivalence_bars_plus_sweep(
     for i, cfg in enumerate(configs):
         sub = sweep_df[sweep_df[label_col] == cfg].sort_values("alpha")
         ax2.plot(sub["alpha"], sub["P_equiv"],
-                 label=cfg, color=PALETTE[i % len(PALETTE)], lw=1.2)
+                 label=cfg, color=case_color(cfg), lw=1.2)
     ax2.set_xlabel(r"Threshold $\alpha$")
     ax2.set_ylabel(r"$P(|\Delta\mu| < \alpha\,\sigma_{\mathrm{run}})$")
     ax2.set_ylim(-0.02, 1.05)

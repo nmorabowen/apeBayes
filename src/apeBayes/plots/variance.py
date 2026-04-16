@@ -13,7 +13,37 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 from .helpers import savefig, ensure_dir, order_config_labels
-from .style import PALETTE, CMAP_DIV, FULL_WIDTH, HALF_WIDTH
+from .style import PALETTE, CMAP_DIV, FULL_WIDTH, HALF_WIDTH, VARIANCE_COLORS
+
+
+# ── Color mapping for variance components ─────────────────────────────────
+
+_BUDGET_COLOR_ORDER: list[str] = [
+    VARIANCE_COLORS["between_case"],     # Config spread
+    VARIANCE_COLORS["between_station"],  # Station spread
+    VARIANCE_COLORS["between_rupture"],  # Run dispersion
+    VARIANCE_COLORS["interaction"],      # Interaction
+    VARIANCE_COLORS["residual"],         # Residual
+]
+
+
+def _budget_colors(names: list[str]) -> list[str]:
+    """Map variance-budget component names to semantic colours."""
+    out = []
+    for i, n in enumerate(names):
+        if "Config" in n:
+            out.append(VARIANCE_COLORS["between_case"])
+        elif "Station" in n:
+            out.append(VARIANCE_COLORS["between_station"])
+        elif "Run" in n:
+            out.append(VARIANCE_COLORS["between_rupture"])
+        elif "Interaction" in n or "γ" in n:
+            out.append(VARIANCE_COLORS["interaction"])
+        elif "Residual" in n or "ε" in n:
+            out.append(VARIANCE_COLORS["residual"])
+        else:
+            out.append(PALETTE[i % len(PALETTE)])
+    return out
 
 
 # ── Variance budget: waterfall chart ─────────────────────────────────────
@@ -41,7 +71,7 @@ def plot_variance_budget_waterfall(
     names = df["component"].tolist()
     vals = df["var_med"].to_numpy(dtype=float)
     pcts = df["pct_med"].to_numpy(dtype=float)
-    colors = PALETTE[:len(names)]
+    colors = _budget_colors(names)
 
     short_names = []
     for n in names:
@@ -103,7 +133,7 @@ def plot_variance_budget_bars(
 
     components = df["component"].tolist()
     pcts = df["pct_med"].to_numpy(dtype=float)
-    colors = PALETTE[:len(components)]
+    colors = _budget_colors(components)
 
     fig, ax = plt.subplots(figsize=figsize)
     left = 0.0
@@ -131,70 +161,106 @@ def plot_variance_budget_bars(
 def plot_variance_components_lollipop(
     comp_df: pd.DataFrame,
     *,
-    figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
+    figsize: tuple[float, float] | None = None,
     out_dir: str | Path | None = None,
     prefix: str = "",
     filename: str = "variance_components_lollipop.pdf",
-) -> tuple[plt.Figure, plt.Axes]:
+) -> tuple[plt.Figure, plt.Axes | np.ndarray]:
     """Lollipop chart of all scale parameters with CI whiskers.
 
     Expects ``comp_df`` from ``variance_component_table()`` with columns:
     component, med, lo, hi.  Works for any mix of sigma_run, sigma_eps[k], nu.
+
+    When nu is present, it gets its own right-hand panel so its wide CI
+    doesn't compress the sigma scales.
     """
     out_dir = ensure_dir(out_dir)
     df = comp_df.copy()
 
-    labels = df["component"].tolist()
-    med = df["med"].to_numpy(dtype=float)
-    lo = df["lo"].to_numpy(dtype=float)
-    hi = df["hi"].to_numpy(dtype=float)
-    y = np.arange(len(labels))
+    has_nu = df["component"].str.contains("nu").any()
+    df_sigma = df[~df["component"].str.contains("nu")].reset_index(drop=True)
+    df_nu = df[df["component"].str.contains("nu")].reset_index(drop=True)
 
-    # Colour: sigma_run → blue, sigma_eps → red/pink, nu → green
-    colors = []
-    for lbl in labels:
+    if has_nu:
+        if figsize is None:
+            figsize = (FULL_WIDTH, max(0.28 * len(df_sigma) + 0.8, 3.0))
+        fig, axes = plt.subplots(
+            1, 2, figsize=figsize, constrained_layout=True,
+            gridspec_kw={"width_ratios": [3, 1]},
+        )
+        ax_sigma, ax_nu = axes
+    else:
+        if figsize is None:
+            figsize = (HALF_WIDTH, max(0.28 * len(df_sigma) + 0.8, 3.0))
+        fig, ax_sigma = plt.subplots(figsize=figsize)
+        axes = np.array([ax_sigma])
+
+    # -- Sigma panel --
+    labels_s = df_sigma["component"].tolist()
+    med_s = df_sigma["med"].to_numpy(dtype=float)
+    lo_s = df_sigma["lo"].to_numpy(dtype=float)
+    hi_s = df_sigma["hi"].to_numpy(dtype=float)
+    y_s = np.arange(len(labels_s))
+
+    colors_s = []
+    for lbl in labels_s:
         if "run" in lbl:
-            colors.append(PALETTE[0])
+            colors_s.append(VARIANCE_COLORS["between_rupture"])
         elif "eps" in lbl:
-            colors.append(PALETTE[1])
-        elif "nu" in lbl:
-            colors.append(PALETTE[2])
+            colors_s.append(VARIANCE_COLORS["residual"])
         else:
-            colors.append(PALETTE[6])
+            colors_s.append(PALETTE[6])
 
-    fig, ax = plt.subplots(figsize=figsize)
+    for i in range(len(labels_s)):
+        ax_sigma.plot([lo_s[i], hi_s[i]], [y_s[i], y_s[i]],
+                      color=colors_s[i], lw=1.5, solid_capstyle="round")
+    ax_sigma.scatter(med_s, y_s, s=40, c=colors_s, zorder=5,
+                     edgecolors="white", linewidth=0.5)
+    for i in range(len(labels_s)):
+        ax_sigma.text(hi_s[i] + (hi_s.max() - lo_s.min()) * 0.02, y_s[i],
+                      f"{med_s[i]:.3f}", va="center", fontsize=7, color="0.3")
 
-    # Stems
-    for i in range(len(labels)):
-        ax.plot([lo[i], hi[i]], [y[i], y[i]], color=colors[i], lw=1.5, solid_capstyle="round")
+    ax_sigma.set_yticks(y_s)
+    ax_sigma.set_yticklabels(labels_s, fontsize=7)
+    ax_sigma.invert_yaxis()
+    ax_sigma.set_xlabel("Posterior value")
+    ax_sigma.set_title("Scale parameters (median + 90% CI)")
 
-    # Dots at median
-    ax.scatter(med, y, s=40, c=colors, zorder=5, edgecolors="white", linewidth=0.5)
-
-    # Value annotations
-    for i in range(len(labels)):
-        ax.text(hi[i] + (hi.max() - lo.min()) * 0.02, y[i], f"{med[i]:.3f}",
-                va="center", fontsize=7, color="0.3")
-
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=7)
-    ax.invert_yaxis()
-    ax.set_xlabel("Posterior value")
-    ax.set_title("Scale parameters (median + 90% CI)")
-
-    # Legend
     patches = []
-    if any("run" in l for l in labels):
-        patches.append(mpatches.Patch(color=PALETTE[0], label=r"$\sigma_{\mathrm{run}}$"))
-    if any("eps" in l for l in labels):
-        patches.append(mpatches.Patch(color=PALETTE[1], label=r"$\sigma_{\varepsilon}$"))
-    if any("nu" in l for l in labels):
-        patches.append(mpatches.Patch(color=PALETTE[2], label=r"$\nu$"))
+    if any("run" in l for l in labels_s):
+        patches.append(mpatches.Patch(color=VARIANCE_COLORS["between_rupture"],
+                                      label=r"$\sigma_{\mathrm{run}}$"))
+    if any("eps" in l for l in labels_s):
+        patches.append(mpatches.Patch(color=VARIANCE_COLORS["residual"],
+                                      label=r"$\sigma_{\varepsilon}$"))
     if patches:
-        ax.legend(handles=patches, fontsize=7, loc="lower right")
+        ax_sigma.legend(handles=patches, fontsize=7, loc="lower right")
+
+    # -- Nu panel (separate x-axis) --
+    if has_nu:
+        labels_n = df_nu["component"].tolist()
+        med_n = df_nu["med"].to_numpy(dtype=float)
+        lo_n = df_nu["lo"].to_numpy(dtype=float)
+        hi_n = df_nu["hi"].to_numpy(dtype=float)
+        y_n = np.arange(len(labels_n))
+
+        for i in range(len(labels_n)):
+            ax_nu.plot([lo_n[i], hi_n[i]], [y_n[i], y_n[i]],
+                       color=PALETTE[4], lw=1.5, solid_capstyle="round")
+        ax_nu.scatter(med_n, y_n, s=40, c=PALETTE[4], zorder=5,
+                      edgecolors="white", linewidth=0.5)
+        for i in range(len(labels_n)):
+            ax_nu.text(hi_n[i] + (hi_n.max() - lo_n.min()) * 0.05, y_n[i],
+                       f"{med_n[i]:.1f}", va="center", fontsize=7, color="0.3")
+
+        ax_nu.set_yticks(y_n)
+        ax_nu.set_yticklabels(labels_n, fontsize=7)
+        ax_nu.invert_yaxis()
+        ax_nu.set_xlabel("Posterior value")
+        ax_nu.set_title(r"$\nu$ (DoF)")
 
     savefig(fig, out_dir, filename, prefix=prefix)
-    return fig, ax
+    return fig, axes if has_nu else ax_sigma
 
 
 # ── Variance components: grouped bar (legacy, fixed) ─────────────────────
@@ -236,7 +302,16 @@ def plot_decomposition_bars(
     lo = df["pct_lo"].to_numpy(dtype=float) if "pct_lo" in df.columns else med
     hi = df["pct_hi"].to_numpy(dtype=float) if "pct_hi" in df.columns else med
     x = np.arange(len(labels))
-    colors = PALETTE[:len(labels)]
+    # Map SSI→station color, Nonlinearity→case color, interaction→interaction color
+    decomp_colors = []
+    for lbl in labels:
+        if "interaction" in lbl.lower():
+            decomp_colors.append(VARIANCE_COLORS["interaction"])
+        elif "SSI" in lbl or "Factor0" in lbl or "Tier" in lbl:
+            decomp_colors.append(VARIANCE_COLORS["between_station"])
+        else:
+            decomp_colors.append(VARIANCE_COLORS["between_case"])
+    colors = decomp_colors
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.bar(x, med, color=colors, edgecolor="white", lw=0.4, alpha=0.85, width=0.6)
