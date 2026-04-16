@@ -57,7 +57,7 @@ class PriorConfig:
     sigma_eps: float = 5.0          # residual SD prior
 
     # Student-t degrees of freedom
-    nu_prior_lambda: float = 5.0    # Exponential(1/lambda) for (nu - 2)
+    nu_prior_lambda: float = 10.0   # Exponential(1/lambda) for (nu - 2)
 
     def __post_init__(self) -> None:
         for fld_name in [
