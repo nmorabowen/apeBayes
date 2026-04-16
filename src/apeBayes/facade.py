@@ -574,6 +574,24 @@ class BayesEpistemicModel:
         from .plots.variance import plot_sigma_stability as _plot
         return _plot(vc, sigma_run_med=sigma_run_med, **kw)
 
+    def plot_variance_ratio(self, **kw):
+        p = self.posterior
+        from .plots.variance import plot_variance_ratio as _plot
+        return _plot(p.sigma_run(), p.sigma_eps(),
+                     p.config_labels, ci=self.cfg.ci, nu=p.nu(), **kw)
+
+    def plot_level_rankings(self, **kw):
+        tier_tbl, case_tbl, _ = self.level_ranking_tables()
+        from .plots.variance import plot_level_rankings as _plot
+        factor_names = (self.cfg.factors[0].name, self.cfg.factors[1].name)
+        return _plot(tier_tbl, case_tbl, factor_names=factor_names, **kw)
+
+    def plot_sigma_stability_triptych(self, **kw):
+        p = self.posterior
+        from .plots.variance import plot_sigma_stability_triptych as _plot
+        return _plot(p.sigma_eps(), p.sigma_run(), p.config_labels,
+                     p.ref_idx, ci=self.cfg.ci, nu=p.nu(), **kw)
+
     def plot_equivalence_matrix(self, alpha: float = 0.5, **kw):
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_matrix as _plot

@@ -450,3 +450,214 @@ def plot_sigma_stability(
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, ax
+
+
+# ── Variance ratio: σ_eps / σ_run ─────────────────────────────────────
+
+def plot_variance_ratio(
+    sigma_run: np.ndarray,
+    sigma_eps: np.ndarray,
+    labels: list[str],
+    ci: tuple[float, float] = (0.05, 0.95),
+    *,
+    nu: np.ndarray | None = None,
+    figsize: tuple[float, float] = (HALF_WIDTH, 3.5),
+    out_dir: str | Path | None = None,
+    prefix: str = "",
+    filename: str = "variance_ratio.pdf",
+) -> tuple[plt.Figure, plt.Axes]:
+    r"""σ_eps^eff / σ_run per config — residual vs aleatory ratio."""
+    from .helpers import case_colors_for_labels
+    out_dir = ensure_dir(out_dir)
+
+    t_factor = np.ones_like(sigma_run)
+    if nu is not None:
+        t_factor = np.sqrt(nu / np.maximum(nu - 2.0, 1e-12))
+
+    if sigma_eps.ndim == 1:
+        ratio = np.repeat((sigma_eps * t_factor)[:, None], len(labels), axis=1)
+    else:
+        ratio = (sigma_eps * t_factor[:, None]) / sigma_run[:, None]
+
+    labels = order_config_labels(labels)
+    ci_lo, ci_hi = ci
+    med = np.median(ratio, axis=0)
+    lo = np.quantile(ratio, ci_lo, axis=0)
+    hi = np.quantile(ratio, ci_hi, axis=0)
+
+    y = np.arange(len(labels))
+    colors = case_colors_for_labels(labels)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    for i in range(len(labels)):
+        ax.plot([lo[i], hi[i]], [y[i], y[i]], color=colors[i], lw=1.5,
+                solid_capstyle="round")
+    ax.scatter(med, y, s=35, c=colors, zorder=5, edgecolors="white", lw=0.5)
+    ax.axvline(1.0, color="0.3", lw=1.2, ls="-", zorder=0)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel(r"$\sigma_{\varepsilon}^{\mathrm{eff}} / \sigma_{\mathrm{run}}$")
+    ax.set_title("Residual vs run variability ratio")
+    ax.grid(True, axis="x", alpha=0.3, lw=0.4)
+
+    savefig(fig, out_dir, filename, prefix=prefix)
+    return fig, ax
+
+
+# ── Level rankings: Tier + Case energy shares ─────────────────────────
+
+def plot_level_rankings(
+    tier_table: pd.DataFrame,
+    case_table: pd.DataFrame,
+    *,
+    factor_names: tuple[str, str] = ("SSI", "Nonlinearity"),
+    figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+    out_dir: str | Path | None = None,
+    prefix: str = "",
+    filename: str = "level_rankings.pdf",
+) -> tuple[plt.Figure, np.ndarray]:
+    """Two-panel horizontal bar chart of per-level energy shares."""
+    out_dir = ensure_dir(out_dir)
+    fig, axes = plt.subplots(1, 2, figsize=figsize, constrained_layout=True)
+
+    f0_col = [c for c in tier_table.columns if c in (factor_names[0], "SSI", "Tier", "Factor0")]
+    f0_col = f0_col[0] if f0_col else tier_table.columns[0]
+    tv = tier_table["share_pct_med"].to_numpy(dtype=float)
+    tl = tier_table["share_pct_lo"].to_numpy(dtype=float)
+    th = tier_table["share_pct_hi"].to_numpy(dtype=float)
+    tlabels = [f"Tier {v}" for v in tier_table[f0_col].tolist()]
+    y0 = np.arange(len(tlabels))
+
+    axes[0].barh(y0, tv, color=VARIANCE_COLORS["between_station"], alpha=0.8, height=0.6)
+    axes[0].errorbar(tv, y0, xerr=[tv - tl, th - tv], fmt="none", capsize=3, color="0.2", lw=0.8)
+    for yi, val in enumerate(tv):
+        axes[0].text(min(val + 1.5, 95), yi, f"{val:.1f}%", va="center")
+    axes[0].set_yticks(y0)
+    axes[0].set_yticklabels(tlabels)
+    axes[0].invert_yaxis()
+    axes[0].set_xlim(0, 100)
+    axes[0].set_xlabel(f"Share of {factor_names[0]} main-effect energy (%)")
+    axes[0].set_title(f"{factor_names[0]} ranking")
+
+    f1_col = [c for c in case_table.columns if c in (factor_names[1], "Nonlinearity", "Case", "Factor1")]
+    f1_col = f1_col[0] if f1_col else case_table.columns[0]
+    cv = case_table["share_pct_med"].to_numpy(dtype=float)
+    cl = case_table["share_pct_lo"].to_numpy(dtype=float)
+    ch = case_table["share_pct_hi"].to_numpy(dtype=float)
+    clabels = [f"Case {v}" for v in case_table[f1_col].tolist()]
+    y1 = np.arange(len(clabels))
+
+    axes[1].barh(y1, cv, color=VARIANCE_COLORS["between_case"], alpha=0.8, height=0.6)
+    axes[1].errorbar(cv, y1, xerr=[cv - cl, ch - cv], fmt="none", capsize=3, color="0.2", lw=0.8)
+    for yi, val in enumerate(cv):
+        axes[1].text(min(val + 1.5, 95), yi, f"{val:.1f}%", va="center")
+    axes[1].set_yticks(y1)
+    axes[1].set_yticklabels(clabels)
+    axes[1].invert_yaxis()
+    axes[1].set_xlim(0, 100)
+    axes[1].set_xlabel(f"Share of {factor_names[1]} main-effect energy (%)")
+    axes[1].set_title(f"{factor_names[1]} ranking")
+
+    savefig(fig, out_dir, filename, prefix=prefix)
+    return fig, axes
+
+
+# ── Sigma stability triptych ──────────────────────────────────────────
+
+def plot_sigma_stability_triptych(
+    sigma_eps: np.ndarray,
+    sigma_run: np.ndarray,
+    labels: list[str],
+    ref_idx: int,
+    ci: tuple[float, float] = (0.05, 0.95),
+    *,
+    nu: np.ndarray | None = None,
+    order_by: str = "stability",
+    figsize: tuple[float, float] = (FULL_WIDTH, 4.5),
+    out_dir: str | Path | None = None,
+    prefix: str = "",
+    filename: str = "sigma_stability_triptych.pdf",
+) -> tuple[plt.Figure, np.ndarray]:
+    r"""Three-panel sigma stability diagnostic.
+
+    Panel 1: Posterior σ_ε violins + CI per config.
+    Panel 2: Relative CI width = (hi − lo) / median.
+    Panel 3: P(σ_ij ≤ σ_ref) — stability probability vs reference.
+    """
+    from .helpers import case_colors_for_labels
+    out_dir = ensure_dir(out_dir)
+    ci_lo, ci_hi = ci
+
+    sig = sigma_eps.copy()
+    if nu is not None:
+        t_factor = np.sqrt(nu / np.maximum(nu - 2.0, 1e-12))
+        if sig.ndim == 2:
+            sig = sig * t_factor[:, None]
+        else:
+            sig = sig * t_factor
+    if sig.ndim == 1:
+        sig = np.repeat(sig[:, None], len(labels), axis=1)
+
+    n = sig.shape[1]
+    med = np.median(sig, axis=0)
+    lo = np.quantile(sig, ci_lo, axis=0)
+    hi = np.quantile(sig, ci_hi, axis=0)
+    rel_ci_w = (hi - lo) / np.maximum(med, 1e-12)
+
+    sig_ref = sig[:, ref_idx]
+    p_le_ref = np.mean(sig <= sig_ref[:, None], axis=0)
+
+    if order_by == "stability":
+        ord_idx = np.argsort(med)
+    else:
+        ord_idx = np.arange(n)
+
+    labels_ord = [labels[i] for i in ord_idx]
+    sig_ord = sig[:, ord_idx]
+    med_ord, lo_ord, hi_ord = med[ord_idx], lo[ord_idx], hi[ord_idx]
+    rel_ci_w_ord = rel_ci_w[ord_idx]
+    p_le_ref_ord = p_le_ref[ord_idx]
+
+    colors = case_colors_for_labels(labels_ord)
+    y = np.arange(n)
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize, constrained_layout=True,
+                             gridspec_kw={"width_ratios": [2, 1, 1]}, sharey=True)
+    ax0, ax1, ax2 = axes
+
+    # Panel 1: violins + CI
+    data = [sig_ord[:, j].ravel() for j in range(n)]
+    parts = ax0.violinplot(data, positions=y, vert=False, widths=0.8,
+                           showmeans=False, showextrema=False)
+    for i, body in enumerate(parts["bodies"]):
+        body.set_facecolor(colors[i])
+        body.set_alpha(0.3)
+    for i in range(n):
+        ax0.plot([lo_ord[i], hi_ord[i]], [y[i], y[i]], color=colors[i],
+                 lw=1.5, solid_capstyle="round")
+    ax0.scatter(med_ord, y, s=30, c=colors, zorder=5, edgecolors="white", lw=0.4)
+    ax0.set_yticks(y)
+    ax0.set_yticklabels(labels_ord)
+    ax0.set_xlabel(r"$\sigma_{\varepsilon}^{\mathrm{eff}}$")
+    ax0.set_title(r"Posterior $\sigma$ by config")
+    ax0.grid(True, axis="x", alpha=0.3, lw=0.4)
+
+    # Panel 2: CI width index
+    ax1.barh(y, rel_ci_w_ord, color=colors, alpha=0.8, height=0.6)
+    ax1.set_xlabel(r"$(\mathrm{CI}_{hi}-\mathrm{CI}_{lo})/\mathrm{median}$")
+    ax1.set_title("CI width index")
+    ax1.grid(True, axis="x", alpha=0.3, lw=0.4)
+
+    # Panel 3: stability probability
+    ref_label = labels[ref_idx]
+    ax2.barh(y, p_le_ref_ord, color=colors, alpha=0.8, height=0.6)
+    ax2.axvline(0.5, color="0.3", lw=0.8, ls="--")
+    ax2.set_xlim(0, 1)
+    ax2.set_xlabel(rf"$P(\sigma_{{ij}} \leq \sigma_{{{ref_label}}})$")
+    ax2.set_title(f"Stability vs {ref_label}")
+    ax2.grid(True, axis="x", alpha=0.3, lw=0.4)
+
+    savefig(fig, out_dir, filename, prefix=prefix)
+    return fig, axes

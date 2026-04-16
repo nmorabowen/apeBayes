@@ -228,6 +228,22 @@ def plot_equivalence_bars_plus_sweep(
     ax = axes[0]
     ax.barh(y, vals, color=colors, edgecolor="white", lw=0.4, alpha=0.85,
             height=0.7)
+
+    # Annotate with P value + beta
+    beta_col = "beta_med" if "beta_med" in df_bar.columns else None
+    for i in range(len(labels_sorted)):
+        p_val = vals[i]
+        annot = f"{p_val:.2f}"
+        if beta_col is not None:
+            b_val = df_bar.iloc[i][beta_col]
+            annot += rf"  ($\beta$~{b_val:+.2f})"
+        # Place text just past the bar end, or inside if bar is long
+        x_text = min(p_val + 0.02, 0.98)
+        ha = "left" if p_val < 0.7 else "right"
+        if p_val >= 0.7:
+            x_text = p_val - 0.02
+        ax.text(x_text, y[i], annot, va="center", ha=ha, fontsize=6)
+
     ax.set_yticks(y)
     ax.set_yticklabels(labels_sorted)
     ax.set_xlabel(rf"$P(|\Delta\mu| < {alpha}\,\sigma_{{\mathrm{{run}}}})$")
