@@ -561,11 +561,6 @@ class BayesEpistemicModel:
         from .plots.variance import plot_variance_budget_waterfall as _plot
         return _plot(vb, **kw)
 
-    def plot_variance_components(self, **kw):
-        vc = self.variance_component_table()
-        from .plots.variance import plot_variance_components as _plot
-        return _plot(vc, **kw)
-
     def plot_decomposition_bars(self, **kw):
         decomp = self.axiswise_decomposition_table()
         from .plots.variance import plot_decomposition_bars as _plot

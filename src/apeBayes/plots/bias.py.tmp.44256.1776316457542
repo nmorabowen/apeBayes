@@ -75,11 +75,8 @@ def plot_mu_triptych(
     fig, axes = plt.subplots(1, 3, figsize=figsize, sharey=True,
                              constrained_layout=True)
 
-    _annot_kws = {"size": 7}
-
     sns.heatmap(
         pivot_mu, annot=annot, fmt=fmt_mu, ax=axes[0], cmap=cmap,
-        annot_kws=_annot_kws,
         cbar_kws={"label": (
             "posterior median of EDP" if original_edp_scale
             else r"posterior median of $\mu$ (log scale)"
@@ -94,7 +91,7 @@ def plot_mu_triptych(
     sns.heatmap(
         pivot_dmu, annot=annot, fmt=fmt_dmu,
         vmin=vmin_dmu, vmax=vmax_dmu, center=0.0,
-        ax=axes[1], cmap=cmap, annot_kws=_annot_kws,
+        ax=axes[1], cmap=cmap,
         cbar_kws={"label": (
             f"median dEDP vs {ref}" if original_edp_scale
             else rf"median $\Delta\mu$ vs {ref}"
@@ -112,7 +109,7 @@ def plot_mu_triptych(
         annot=(pivot_ratio.round(2) if annot else False),
         fmt=fmt_ratio,
         vmin=vmin_r, vmax=vmax_r, center=0.0,
-        ax=axes[2], cmap=cmap, annot_kws=_annot_kws,
+        ax=axes[2], cmap=cmap,
         cbar_kws={"label": r"color: $\log$ ratio (= $\Delta\mu$)"},
     )
     axes[2].set_title(rf"Median ratio $\exp(\Delta\mu_{{ij}})$ vs {ref}")
@@ -348,29 +345,21 @@ def plot_standardized_bias(
     col_hi: str = "std_bias_hi",
     ref_label: str | None = None,
     dot_alpha: float = 0.28,
-    posterior_style: str = "violin",
     figsize: tuple[float, float] | None = None,
     out_dir: str | Path | None = None,
     prefix: str = "",
     filename: str = "standardized_bias.pdf",
 ) -> tuple[plt.Figure, np.ndarray]:
-    """Layered standardised-bias plot with posterior density, raw dots,
-    X markers, and credible intervals.
+    """Layered standardised-bias plot with violins, raw dots, X markers,
+    and posterior credible intervals with cap-handle error bars.
 
     Parameters
     ----------
     bias_df : DataFrame
         Output of ``standardized_bias_table()``.
-    posterior_style : {"violin", "ridge", "none"}
-        How to visualise the full posterior of beta.
-        ``"violin"``: symmetric KDE mirrored about the row centre.
-        ``"ridge"``:  one-sided KDE fill above the row baseline,
-        all ridges normalised to a shared global maximum so widths
-        are comparable across configs.
-        ``"none"``:   no posterior density overlay, only error bars.
     beta_draws : (S, n_configs) array, optional
         Full posterior draws of standardised bias per config.
-        When provided, posterior KDEs are drawn behind the
+        When provided, symmetric violin KDEs are drawn behind the
         error bars to show the full posterior shape.
     beta_labels : list[str], optional
         Config labels matching columns of *beta_draws*.
@@ -399,9 +388,8 @@ def plot_standardized_bias(
             _draw_bias_panel(axes[idx], sub, label_col, col_med, col_lo, col_hi,
                              beta_draws=beta_draws, beta_labels=beta_labels,
                              raw_dots=raw_dots, raw_means=raw_means,
-                             raw_labels=raw_labels, dot_alpha=dot_alpha,
-                             posterior_style=posterior_style)
-            axes[idx].set_title(str(sta))
+                             raw_labels=raw_labels, dot_alpha=dot_alpha)
+            axes[idx].set_title(str(sta), fontsize=8)
             if idx > 0:
                 axes[idx].set_ylabel("")
         xmins = [ax.get_xlim()[0] for ax in axes]
@@ -415,8 +403,7 @@ def plot_standardized_bias(
         _draw_bias_panel(ax, bias_df, label_col, col_med, col_lo, col_hi,
                          beta_draws=beta_draws, beta_labels=beta_labels,
                          raw_dots=raw_dots, raw_means=raw_means,
-                         raw_labels=raw_labels, dot_alpha=dot_alpha,
-                         posterior_style=posterior_style)
+                         raw_labels=raw_labels, dot_alpha=dot_alpha)
         axes = np.array([ax])
 
     if ref_label is not None:
@@ -446,18 +433,15 @@ def _draw_bias_panel(
     raw_means: np.ndarray | None = None,
     raw_labels: list[str] | None = None,
     dot_alpha: float = 0.28,
-    posterior_style: str = "violin",
 ) -> None:
     """Draw one bias panel with layered elements.
 
     Layers (back to front):
-      0  Grey aleatory band |beta| < 1 with ±1 dashed lines
-      1  Posterior density (violin, ridge, or none)
+      0  Grey aleatory band |beta| < 1
+      1  Symmetric violin KDEs of posterior beta (if beta_draws provided)
       2  Raw per-runkey dots (steel, semi-transparent)
       3  Raw TierCase-mean X markers (amber)
       4  Posterior CI error bars with cap handles (navy)
-
-    posterior_style : {"violin", "ridge", "none"}
     """
     from scipy.stats import gaussian_kde
 
@@ -469,23 +453,19 @@ def _draw_bias_panel(
     lo = df_ord[col_lo].to_numpy(dtype=float)
     hi = df_ord[col_hi].to_numpy(dtype=float)
 
-    # Layer 0: aleatory band |beta| < 1 with dashed boundary lines
+    # Layer 0: aleatory band |beta| < 1
     ax.axvspan(-1.0, 1.0, color="grey", alpha=0.10, zorder=0,
                label=r"$|\beta| < 1$ (within aleatory variability)")
     ax.axvline(0, color="black", lw=0.8, alpha=0.6, zorder=1)
-    ax.axvline(-1.0, color="0.4", lw=0.6, ls="--", alpha=0.6, zorder=0)
-    ax.axvline(1.0, color="0.4", lw=0.6, ls="--", alpha=0.6, zorder=0)
 
-    # Layer 1: posterior density overlay
-    if posterior_style != "none" and beta_draws is not None and beta_labels is not None:
+    # Layer 1: symmetric violin KDEs of posterior beta
+    if beta_draws is not None and beta_labels is not None:
         label_to_y = {lbl: yi for lbl, yi in zip(labels, y)}
-
-        # Pre-compute all KDEs so we can normalise consistently
-        kdes: list[tuple[int, float, np.ndarray, np.ndarray]] = []
-        global_peak = 0.0
+        violin_hw = 0.35  # half-width of the violin in y-axis units
         for i, bl in enumerate(beta_labels):
             if bl not in label_to_y:
                 continue
+            yi = label_to_y[bl]
             draws_i = beta_draws[:, i]
             draws_i = draws_i[np.isfinite(draws_i)]
             if len(draws_i) < 10:
@@ -500,36 +480,17 @@ def _draw_bias_panel(
                 200,
             )
             density = kde(x_grid)
-            peak = float(density.max())
-            if peak > global_peak:
-                global_peak = peak
-            kdes.append((i, label_to_y[bl], x_grid, density))
-
-        if global_peak <= 0:
-            global_peak = 1.0
-
-        hw = 0.38  # max half-width in y-axis units
-
-        for idx, (i, yi, x_grid, density) in enumerate(kdes):
-            color = case_color(beta_labels[i])
-            # Normalise to shared global peak
-            normed = density / global_peak * hw
-
-            if posterior_style == "violin":
-                ax.fill_between(
-                    x_grid, yi - normed, yi + normed,
-                    alpha=0.18, color=color, zorder=1,
-                    label=("posterior density" if idx == 0 else None),
-                )
-                ax.plot(x_grid, yi - normed, lw=0.4, color=color, alpha=0.4, zorder=1)
-                ax.plot(x_grid, yi + normed, lw=0.4, color=color, alpha=0.4, zorder=1)
-            elif posterior_style == "ridge":
-                ax.fill_between(
-                    x_grid, yi, yi - normed,
-                    alpha=0.25, color=color, zorder=1,
-                    label=("posterior density" if idx == 0 else None),
-                )
-                ax.plot(x_grid, yi - normed, lw=0.6, color=color, alpha=0.6, zorder=1)
+            density = density / density.max() * violin_hw
+            # Symmetric violin mirrored about the row centre
+            ax.fill_between(
+                x_grid, yi - density, yi + density,
+                alpha=0.18, color=PALETTE[6], zorder=1,
+                label=("posterior density" if i == 0 else None),
+            )
+            ax.plot(x_grid, yi - density, lw=0.5, color=PALETTE[6],
+                    alpha=0.5, zorder=1)
+            ax.plot(x_grid, yi + density, lw=0.5, color=PALETTE[6],
+                    alpha=0.5, zorder=1)
 
     # Layer 2: raw per-runkey dots
     if raw_dots is not None and raw_labels is not None:

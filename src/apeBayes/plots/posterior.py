@@ -101,8 +101,12 @@ def plot_mu_density(
     n_cols = min(n_cols, n)
     n_rows = int(np.ceil(n / n_cols))
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(figsize[0], figsize[1] * n_rows),
+    row_h = max(figsize[1] / max(n_rows, 1), 1.2)  # compact row height
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(figsize[0], row_h * n_rows),
                              squeeze=False, constrained_layout=True)
+
+    from .helpers import case_color as _cc
 
     for i, cfg in enumerate(configs):
         ax = axes.flat[i]
@@ -116,15 +120,16 @@ def plot_mu_density(
 
         draws_plot = to_edp_scale(draws, original_edp_scale)
 
+        color = _cc(cfg)
         if kind == "cdf":
-            sns.ecdfplot(draws_plot, ax=ax, lw=1.4, color=PALETTE[i % len(PALETTE)])
+            sns.ecdfplot(draws_plot, ax=ax, lw=1.4, color=color)
         elif normalize:
-            _plot_normalized_kde(ax, draws_plot, color=PALETTE[i % len(PALETTE)])
+            _plot_normalized_kde(ax, draws_plot, color=color)
         else:
             sns.kdeplot(draws_plot, fill=True, alpha=0.25, lw=1.4, ax=ax,
-                        color=PALETTE[i % len(PALETTE)])
+                        color=color)
 
-        ax.set_title(cfg, fontsize=7)
+        ax.set_title(cfg)
         ax.set_xlabel(edp_axis_label(original_edp_scale))
 
     # Hide unused axes

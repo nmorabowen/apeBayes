@@ -90,26 +90,30 @@ def plot_variance_budget_waterfall(
 
     bottom = 0.0
     x = np.arange(len(names))
+    total = float(vals.sum())
+
     for i, (name, val, pct) in enumerate(zip(short_names, vals, pcts)):
-        bar = ax.bar(i, val, bottom=bottom, color=colors[i], edgecolor="white",
-                     lw=0.5, width=0.65)
-        # Label: percentage inside bar, absolute value above
+        ax.bar(i, val, bottom=bottom, color=colors[i], edgecolor="white",
+               lw=0.5, width=0.65)
         mid_y = bottom + val / 2
-        if pct > 3:
+        # Percentage inside bar (only if bar is tall enough)
+        bar_frac = val / total if total > 0 else 0
+        if bar_frac > 0.08:
             ax.text(i, mid_y, f"{pct:.0f}%", ha="center", va="center",
-                    fontsize=8, fontweight="bold", color="white")
-        ax.text(i, bottom + val + 0.001, f"{val:.4f}", ha="center", va="bottom",
-                fontsize=6, color="0.3")
+                    fontweight="bold", color="white")
+        else:
+            # Small bar: put percentage to the right
+            ax.text(i + 0.38, mid_y, f"{pct:.0f}%", ha="left", va="center",
+                    color=colors[i])
         bottom += val
 
-    # Total line
-    ax.axhline(bottom, color="0.3", lw=0.8, ls=":", zorder=0)
-    ax.text(len(names) - 0.3, bottom, f"Total = {bottom:.4f}",
-            ha="right", va="bottom", fontsize=7, color="0.3")
+    # Total annotation (top-left, away from bars)
+    ax.text(0.02, 0.97, f"Total = {bottom:.4f}",
+            transform=ax.transAxes, ha="left", va="top", color="0.3")
 
     ax.set_xticks(x)
-    ax.set_xticklabels(short_names, fontsize=8)
-    ax.set_ylabel("Variance (log EDP)²")
+    ax.set_xticklabels(short_names)
+    ax.set_ylabel("Variance (log EDP)\u00b2")
     ax.set_title("Variance budget (waterfall)")
     ax.set_xlim(-0.5, len(names) - 0.5)
 
@@ -284,7 +288,7 @@ def plot_variance_components(
 def plot_decomposition_bars(
     decomp_df: pd.DataFrame,
     *,
-    figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+    figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
     out_dir: str | Path | None = None,
     prefix: str = "",
     filename: str = "decomposition_bars.pdf",
