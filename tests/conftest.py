@@ -13,6 +13,8 @@ import pandas as pd
 import pytest
 
 from apeBayes.config import ModelConfig, FactorSpec, PriorConfig, SamplingConfig
+from apeBayes.data import encode_dataset
+from apeBayes.posterior import PosteriorAccessor
 
 
 # ── Constants ───────────────────────────────────────────────────────────
@@ -93,6 +95,125 @@ def default_config() -> ModelConfig:
         priors=PriorConfig(),
         sampling=SamplingConfig(draws=200, tune=200, chains=2, seed=RNG_SEED),
     )
+
+
+def _make_idata(
+    *,
+    sigma_src: np.ndarray,
+    sigma_inter: np.ndarray | None = None,
+    xi_case: np.ndarray | None = None,
+    mu0: np.ndarray | None = None,
+    mu_config: np.ndarray | None = None,
+    sigma_eps: np.ndarray | None = None,
+    nu: np.ndarray | None = None,
+    case_labels: tuple[str, ...] = ("A", "B", "C", "D"),
+    config_labels: tuple[str, ...] = tuple(
+        f"{t}{c}" for t in (1, 2, 3, 4) for c in ("A", "B", "C", "D")
+    ),
+):
+    """Return a minimal InferenceData-like posterior wrapped for PosteriorAccessor.
+
+    Uses xarray to build a real Dataset under ``posterior`` so
+    ``flatten_posterior`` works unchanged.
+    """
+    import arviz as az
+    import xarray as xr
+
+    S = len(sigma_src)
+    # Pretend single chain: reshape (S,) -> (1, S) for (chain, draw)
+    data_vars: dict = {
+        "sigma_run": (("chain", "draw"), sigma_src.reshape(1, S)),
+    }
+    if sigma_inter is not None:
+        data_vars["sigma_inter"] = (("chain", "draw"), sigma_inter.reshape(1, S))
+    if xi_case is not None:
+        data_vars["xi_case"] = (
+            ("chain", "draw", "Case"),
+            xi_case.reshape(1, S, -1),
+        )
+    if mu0 is not None:
+        data_vars["mu0"] = (("chain", "draw"), mu0.reshape(1, S))
+    if mu_config is not None:
+        data_vars["mu_config"] = (
+            ("chain", "draw", "Config"),
+            mu_config.reshape(1, S, -1),
+        )
+    if sigma_eps is not None:
+        if sigma_eps.ndim == 1:
+            data_vars["sigma_eps"] = (("chain", "draw"), sigma_eps.reshape(1, S))
+        else:
+            data_vars["sigma_eps_config"] = (
+                ("chain", "draw", "Config"),
+                sigma_eps.reshape(1, S, -1),
+            )
+    if nu is not None:
+        data_vars["nu_minus2"] = (("chain", "draw"), (nu - 2.0).reshape(1, S))
+
+    coords: dict = {"chain": [0], "draw": np.arange(S)}
+    if "Case" in {d for dims, _ in data_vars.values() for d in dims}:  # type: ignore[misc]
+        coords["Case"] = list(case_labels)
+    if "Config" in {d for dims, _ in data_vars.values() for d in dims}:  # type: ignore[misc]
+        coords["Config"] = list(config_labels)
+
+    post = xr.Dataset(data_vars, coords=coords)
+    return az.InferenceData(posterior=post)
+
+
+@pytest.fixture
+def stub_dataset(synthetic_long_df, default_config):
+    """EpistemicDataset for the 16-config synthetic data."""
+    return encode_dataset(synthetic_long_df, default_config)
+
+
+@pytest.fixture
+def stub_posterior_v8(stub_dataset):
+    """Lightweight PosteriorAccessor for a v8-shaped model (src + inter).
+
+    50 draws, no xi_case. Provides deterministic σ_src, σ_inter, σ_eps_config, ν.
+    """
+    rng = np.random.default_rng(0)
+    S = 50
+    sigma_src = np.abs(rng.normal(0.55, 0.05, size=S))
+    sigma_inter = np.abs(rng.normal(0.30, 0.04, size=S))
+    mu0 = rng.normal(-2.0, 0.05, size=S)
+    mu_config = rng.normal(0.0, 0.2, size=(S, 16))
+    sigma_eps = np.abs(rng.normal(0.10, 0.02, size=(S, 16)))
+    nu = np.abs(rng.normal(25.0, 3.0, size=S)) + 3.0
+    idata = _make_idata(
+        sigma_src=sigma_src,
+        sigma_inter=sigma_inter,
+        mu0=mu0,
+        mu_config=mu_config,
+        sigma_eps=sigma_eps,
+        nu=nu,
+    )
+    return PosteriorAccessor(idata, stub_dataset)
+
+
+@pytest.fixture
+def stub_posterior_v9(stub_dataset):
+    """Lightweight v9-shaped posterior with xi_case present (per-case interaction loading)."""
+    rng = np.random.default_rng(1)
+    S = 30
+    sigma_src = np.abs(rng.normal(0.55, 0.05, size=S))
+    sigma_inter = np.abs(rng.normal(0.30, 0.04, size=S))
+    xi_case = np.abs(rng.normal(1.0, 0.1, size=(S, 4)))
+    idata = _make_idata(
+        sigma_src=sigma_src,
+        sigma_inter=sigma_inter,
+        xi_case=xi_case,
+    )
+    return PosteriorAccessor(idata, stub_dataset)
+
+
+@pytest.fixture
+def stub_posterior_v3(stub_dataset):
+    """Lightweight v1/v2/v3-shaped posterior: source only, no interaction."""
+    rng = np.random.default_rng(2)
+    S = 40
+    sigma_src = np.abs(rng.normal(0.55, 0.05, size=S))
+    idata = _make_idata(sigma_src=sigma_src)
+    return PosteriorAccessor(idata, stub_dataset)
 
 
 @pytest.fixture(scope="session")

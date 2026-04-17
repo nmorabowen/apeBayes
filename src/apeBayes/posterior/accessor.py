@@ -8,12 +8,13 @@ No more _post() vs _stack_samples_2d() confusion.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
+
+import numpy as np
 
 from ..utils import flatten_posterior, student_t_sd_factor
 
 if TYPE_CHECKING:
-    import numpy as np
     from arviz import InferenceData
 
     from ..data import EpistemicDataset
@@ -104,8 +105,16 @@ class PosteriorAccessor:
         return self.draws("delta_st")
 
     def sigma_run(self) -> np.ndarray:
-        """(S,) run-level SD."""
+        """(S,) run-level SD. Alias kept for backward reference in model code."""
         return self.draws("sigma_run").ravel()
+
+    def sigma_src(self) -> np.ndarray:
+        """(S,) source (rupture) SD; Python-facing name for σ_src.
+
+        Alias for :meth:`sigma_run` (PyMC variable name is unchanged).
+        See ``uncertanty_measures.md`` §4.1 and §7.
+        """
+        return self.sigma_run()
 
     def b_run(self) -> np.ndarray:
         """(S, n_runs) run random effects."""
@@ -201,6 +210,50 @@ class PosteriorAccessor:
         if sig.ndim == 1:
             return sig * factor
         return sig * factor[:, None]
+
+    def sigma_pred(
+        self,
+        sigma_gm: np.ndarray | Callable[["PosteriorAccessor"], np.ndarray],
+        *,
+        ref_idx: int | None = None,
+    ) -> np.ndarray:
+        r"""Full-predictive SD σ_pred = √(σ_GM² + σ_eps_eff²) per draw.
+
+        Implements the generous sensitivity denominator of
+        ``uncertanty_measures.md`` §4.2:
+
+        .. math::
+            \sigma_{\text{pred},(t,c)}^{(s)} =
+              \sqrt{\sigma_{\text{GM}}^{(s)\,2} + \sigma_{\varepsilon,\text{eff}}^{(s)\,2}}
+
+        with the Student-t SD correction :math:`\sqrt{\nu/(\nu-2)}` folded
+        into ``sigma_eps_effective()``.
+
+        Parameters
+        ----------
+        sigma_gm : np.ndarray | callable
+            Either a precomputed σ_GM array of shape ``(S,)`` (broadcastable
+            against per-config σ_eps) or a callable ``(self) -> np.ndarray``
+            that assembles σ_GM from this accessor's draws.
+        ref_idx : int | None
+            If the residual is heteroskedastic and only the reference-config
+            residual should be folded in (the spec's default), pass its
+            index. When ``None`` and the residual is ``(S, K)``, the full
+            ``(S, K)`` array is used and σ_pred comes back shaped ``(S, K)``.
+
+        Returns
+        -------
+        np.ndarray
+            ``(S,)`` or ``(S, K)`` full-predictive SD draws.
+        """
+        gm = sigma_gm(self) if callable(sigma_gm) else np.asarray(sigma_gm)
+        eps = self.sigma_eps_effective()
+        if eps.ndim == 2 and ref_idx is not None:
+            eps = eps[:, ref_idx]
+        if eps.ndim == 1:
+            return np.sqrt(gm * gm + eps * eps)
+        # Broadcast σ_GM (S,) against σ_eps (S, K)
+        return np.sqrt(gm[:, None] ** 2 + eps ** 2)
 
     @property
     def is_heteroskedastic(self) -> bool:
