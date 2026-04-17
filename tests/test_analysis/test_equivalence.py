@@ -32,6 +32,16 @@ def mock_posterior():
     return mu_config, sigma_run, labels
 
 
+class TestEquivalenceDefaults:
+    def test_alpha_default_is_paper_spec(self):
+        """alpha defaults to 0.4 per uncertanty_measures.md \u00a75."""
+        import inspect
+        assert inspect.signature(equivalence_probability).parameters["alpha"].default == 0.4
+        assert inspect.signature(epistemic_distance_matrix).parameters["alpha"].default == 0.4
+        assert inspect.signature(epistemic_equivalence_matrix).parameters["alpha"].default == 0.4
+        assert inspect.signature(epistemic_clusters).parameters["alpha"].default == 0.4
+
+
 class TestEquivalenceProbability:
     def test_shape(self, mock_posterior):
         mu, sigma, labels = mock_posterior

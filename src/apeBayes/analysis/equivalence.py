@@ -3,6 +3,11 @@ Epistemic equivalence analysis.
 
 Probabilistic equivalence testing, pairwise distance/equivalence matrices,
 and hierarchical clustering of configurations.
+
+All functions accept ``sigma_denom`` (the aleatory SD per draw) rather than
+a specific ``sigma_run``; the caller chooses whether that denominator is
+\u03c3_src, \u03c3_GM (canonical), or \u03c3_pred. See ``uncertanty_measures.md`` \u00a74.
+Paper-level defaults (\u00a75\u2013\u00a76): ``alpha = 0.4`` for the equivalence threshold.
 """
 
 from __future__ import annotations
@@ -13,33 +18,68 @@ from scipy.cluster.hierarchy import fcluster, leaves_list, linkage
 from scipy.spatial.distance import squareform
 
 
+def _apply_denom(dmu: np.ndarray, sigma_denom: np.ndarray,
+                 subset_idx: np.ndarray | None) -> np.ndarray:
+    """Divide ``dmu`` (S, M) by ``sigma_denom`` handling 1-D or 2-D denoms."""
+    if sigma_denom.ndim == 1:
+        return dmu / sigma_denom[:, None]
+    if sigma_denom.ndim == 2:
+        denom = sigma_denom[:, subset_idx] if subset_idx is not None else sigma_denom
+        if denom.shape != dmu.shape:
+            raise ValueError(
+                f"sigma_denom shape {denom.shape} incompatible with dmu shape {dmu.shape}"
+            )
+        return dmu / denom
+    raise ValueError(
+        f"sigma_denom must be 1-D (S,) or 2-D (S, K), got shape {sigma_denom.shape}"
+    )
+
+
+def _threshold_mask(dmu: np.ndarray, sigma_denom: np.ndarray,
+                    alpha: float, subset_idx: np.ndarray | None) -> np.ndarray:
+    """Return boolean mask |dmu| < alpha * sigma_denom."""
+    if sigma_denom.ndim == 1:
+        return np.abs(dmu) < alpha * sigma_denom[:, None]
+    if sigma_denom.ndim == 2:
+        denom = sigma_denom[:, subset_idx] if subset_idx is not None else sigma_denom
+        return np.abs(dmu) < alpha * denom
+    raise ValueError(
+        f"sigma_denom must be 1-D (S,) or 2-D (S, K), got shape {sigma_denom.shape}"
+    )
+
+
 def equivalence_probability(
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     ref_idx: int,
     labels: list[str],
     *,
-    alpha: float = 0.5,
+    alpha: float = 0.4,
     ci: tuple[float, float] = (0.05, 0.95),
     subset_idx: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """P(|Δμ_k| < α · σ_run) for each configuration vs reference.
+    r"""P(|\u0394\u03bc_k| < \u03b1 \u00b7 \u03c3_denom) for each configuration vs reference.
 
     Parameters
     ----------
-    mu_config : (S, K) — configuration effects.
-    sigma_run : (S,) — run-level SD.
-    ref_idx : int — index of reference config.
-    labels : list[str] — config labels for the subset.
-    alpha : float — equivalence radius in σ_run units.
-    subset_idx : optional index array for a subset of configs.
+    mu_config : (S, K) array
+        Configuration effects per draw.
+    sigma_denom : (S,) or (S, K) array
+        Aleatory denominator per draw \u2014 \u03c3_src, \u03c3_GM, or \u03c3_pred.
+    ref_idx : int
+        Index of the reference configuration.
+    labels : list[str]
+        Config labels for the subset.
+    alpha : float
+        Equivalence radius on the \u03b2 scale. Default 0.4 per spec \u00a75.
+    subset_idx : optional
+        Index array for a subset of configs.
     """
-    mu_full = mu_config  # (S, K)
-    mu_sel = mu_full[:, subset_idx] if subset_idx is not None else mu_full
+    mu_sel = mu_config[:, subset_idx] if subset_idx is not None else mu_config
+    dmu = mu_sel - mu_config[:, [ref_idx]]
 
-    dmu = mu_sel - mu_full[:, [ref_idx]]
-    beta = dmu / sigma_run[:, None]
-    P_equiv = np.mean(np.abs(dmu) < alpha * sigma_run[:, None], axis=0)
+    beta = _apply_denom(dmu, sigma_denom, subset_idx)
+    P_equiv = np.mean(_threshold_mask(dmu, sigma_denom, alpha, subset_idx), axis=0)
 
     ci_lo, ci_hi = ci
     return pd.DataFrame({
@@ -54,33 +94,26 @@ def equivalence_probability(
 
 def equivalence_sweep(
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     ref_idx: int,
     labels: list[str],
     *,
     alphas: np.ndarray | None = None,
     subset_idx: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Sweep equivalence probability over a range of α thresholds.
+    """Sweep equivalence probability over a range of \u03b1 thresholds.
 
     Returns a long DataFrame with columns: Config, alpha, P_equiv.
     """
     if alphas is None:
-        alphas = np.linspace(0.01, 0.5, 50)
+        alphas = np.linspace(0.01, 1.2, 60)
 
-    mu_full = mu_config
-    if subset_idx is not None:
-        mu_sel = mu_full[:, subset_idx]
-    else:
-        mu_sel = mu_full
-        labels = labels
-
-    mu_ref = mu_full[:, [ref_idx]]
-    dmu = mu_sel - mu_ref             # (S, M)
+    mu_sel = mu_config[:, subset_idx] if subset_idx is not None else mu_config
+    dmu = mu_sel - mu_config[:, [ref_idx]]  # (S, M)
 
     records = []
     for a in alphas:
-        P = np.mean(np.abs(dmu) < a * sigma_run[:, None], axis=0)
+        P = np.mean(_threshold_mask(dmu, sigma_denom, float(a), subset_idx), axis=0)
         for k, lbl in enumerate(labels):
             records.append({"Config": lbl, "alpha": float(a), "P_equiv": float(P[k])})
 
@@ -89,31 +122,28 @@ def equivalence_sweep(
 
 def epistemic_distance_matrix(
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     *,
-    alpha: float = 0.5,
+    alpha: float = 0.4,
     labels: list[str] | None = None,
     subset_idx: np.ndarray | None = None,
 ) -> tuple[list[str], np.ndarray]:
-    """NxN epistemic distance: D_ij = 1 − P(|μ_i − μ_j| < α·σ_run).
+    """NxN epistemic distance: D_ij = 1 \u2212 P(|\u03bc_i \u2212 \u03bc_j| < \u03b1\u00b7\u03c3_denom).
 
-    Parameters
-    ----------
-    mu_config : (S, K) — config effects per draw.
-    sigma_run : (S,) — run-level SD.
-    alpha : float — equivalence radius.
-    labels : list[str] — config labels (length K or len(subset_idx)).
-    subset_idx : optional subset indices.
-
-    Returns
-    -------
-    (labels, D) where D is (M, M) symmetric, D_ii = 0.
+    ``sigma_denom`` must be a 1-D ``(S,)`` array \u2014 pairwise comparisons
+    share a single station-level aleatory scale per draw, so there is no
+    meaningful (S, K) broadcast for config-dependent residuals here.
     """
+    if sigma_denom.ndim != 1:
+        raise ValueError(
+            f"epistemic_distance_matrix requires a 1-D sigma_denom, "
+            f"got shape {sigma_denom.shape}"
+        )
     mu_sel = mu_config[:, subset_idx] if subset_idx is not None else mu_config
 
-    # Pairwise |Δμ| for each draw → (S, M, M)
+    # Pairwise |\u0394\u03bc| for each draw \u2192 (S, M, M)
     dmu = mu_sel[:, :, None] - mu_sel[:, None, :]
-    P = np.mean(np.abs(dmu) < alpha * sigma_run[:, None, None], axis=0)
+    P = np.mean(np.abs(dmu) < alpha * sigma_denom[:, None, None], axis=0)
     D = 1.0 - P
     np.fill_diagonal(D, 0.0)
 
@@ -125,15 +155,15 @@ def epistemic_distance_matrix(
 
 def epistemic_equivalence_matrix(
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     *,
-    alpha: float = 0.5,
+    alpha: float = 0.4,
     labels: list[str] | None = None,
     subset_idx: np.ndarray | None = None,
 ) -> tuple[list[str], np.ndarray]:
-    """NxN equivalence: P_ij = P(|μ_i − μ_j| < α·σ_run)."""
+    """NxN equivalence matrix: P_ij = P(|\u03bc_i \u2212 \u03bc_j| < \u03b1\u00b7\u03c3_denom)."""
     labels, D = epistemic_distance_matrix(
-        mu_config, sigma_run,
+        mu_config, sigma_denom,
         alpha=alpha, labels=labels, subset_idx=subset_idx,
     )
     P = 1.0 - D
@@ -143,9 +173,9 @@ def epistemic_equivalence_matrix(
 
 def epistemic_clusters(
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     *,
-    alpha: float = 0.5,
+    alpha: float = 0.4,
     labels: list[str] | None = None,
     subset_idx: np.ndarray | None = None,
     method: str = "average",
@@ -155,14 +185,14 @@ def epistemic_clusters(
     """Hierarchical clustering on epistemic distance.
 
     Uses either a distance *threshold* or a fixed *n_clusters* count.
-    If neither is given, defaults to threshold = 1 − α.
+    If neither is given, defaults to ``threshold = 1 \u2212 alpha``.
 
     Returns
     -------
     pd.DataFrame with columns: Config, cluster, leaf_order.
     """
     labels_out, D = epistemic_distance_matrix(
-        mu_config, sigma_run,
+        mu_config, sigma_denom,
         alpha=alpha, labels=labels, subset_idx=subset_idx,
     )
     M = len(labels_out)
