@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from .analysis import bias, decomposition, equivalence, fitted, variance
-from .config import ModelConfig
+from .config import DecisionConfig, ModelConfig
 from .data import EpistemicDataset, encode_dataset
 from .diagnostics.convergence import (
     diagnostics_summary,
@@ -24,6 +24,7 @@ from .diagnostics.convergence import (
     rhat_table,
 )
 from .diagnostics.validation import posterior_predictive_check
+from .model.base import ModelBuilder
 from .model.comparison import FittedVariant, compare_models
 from .model.flat import FlatConfigModel
 from .model.sampling import sample_model
@@ -32,6 +33,13 @@ from .posterior.accessor import PosteriorAccessor
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
     from arviz import InferenceData
+
+
+def _fmt(a: float) -> str:
+    """Format an α value into a stable column-label suffix (e.g. 0.4 -> '0.4')."""
+    # Strip trailing zeros, keep at least one decimal for floats that look int
+    s = f"{a:g}"
+    return s
 
 
 class BayesEpistemicModel:
@@ -59,11 +67,13 @@ class BayesEpistemicModel:
         self.name = name
         self.data: EpistemicDataset = encode_dataset(df, self.cfg)
         self._posterior: PosteriorAccessor | None = None
+        self._builder: ModelBuilder | None = None
+        self._sigma_gm_cache: np.ndarray | None = None
 
     def fit(
         self,
         *,
-        builder: FlatConfigModel | None = None,
+        builder: ModelBuilder | None = None,
         prior_predictive: bool = True,
         posterior_predictive: bool = True,
     ) -> BayesEpistemicModel:
@@ -83,6 +93,7 @@ class BayesEpistemicModel:
         """
         if builder is None:
             builder = FlatConfigModel()
+        self._builder = builder
 
         pm_model = builder.build(self.data, self.cfg)
         idata = sample_model(
@@ -92,6 +103,7 @@ class BayesEpistemicModel:
             posterior_predictive=posterior_predictive,
         )
         self._posterior = PosteriorAccessor(idata, self.data)
+        self._sigma_gm_cache = None
         return self
 
     @property
@@ -110,6 +122,51 @@ class BayesEpistemicModel:
     def is_fitted(self) -> bool:
         """Return True if the model has been fitted."""
         return self._posterior is not None
+
+    @property
+    def builder(self) -> ModelBuilder:
+        """Return the ModelBuilder that produced the posterior.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted or loaded with a builder.
+        """
+        if self._builder is None:
+            raise RuntimeError(
+                "No ModelBuilder registered. Call fit() or load(builder=...) first."
+            )
+        return self._builder
+
+    # ── Canonical aleatory denominators ──────────────────────────────────
+
+    def sigma_src_draws(self) -> np.ndarray:
+        """(S,) posterior draws of σ_src. Alias for ``posterior.sigma_src()``."""
+        return self.posterior.sigma_src()
+
+    def sigma_GM_draws(self) -> np.ndarray:
+        """(S,) posterior draws of σ_GM via per-variant dispatch.
+
+        Dispatches to the fitted model's ``sigma_GM(post)`` method per
+        ``uncertanty_measures.md`` §7. Cached after the first call.
+        """
+        if self._sigma_gm_cache is None:
+            self._sigma_gm_cache = self.builder.sigma_GM(self.posterior)
+        return self._sigma_gm_cache
+
+    def sigma_pred_draws(self, ref_idx: int | None = None) -> np.ndarray:
+        """(S,) posterior draws of σ_pred = √(σ_GM² + σ_eps_eff²).
+
+        Parameters
+        ----------
+        ref_idx : int | None
+            Residual to fold in. When ``None``, uses the reference config
+            index from the dataset (matches the spec's default).
+        """
+        p = self.posterior
+        if ref_idx is None:
+            ref_idx = p.ref_idx
+        return p.sigma_pred(self.sigma_GM_draws(), ref_idx=ref_idx)
 
     # ── Serialization ───────────────────────────────────────────────────
 
@@ -144,6 +201,7 @@ class BayesEpistemicModel:
         cfg: ModelConfig | None = None,
         *,
         name: str | None = None,
+        builder: ModelBuilder | None = None,
     ) -> BayesEpistemicModel:
         """Reload a fitted model from a NetCDF file.
 
@@ -158,6 +216,10 @@ class BayesEpistemicModel:
             Model configuration (must match the one used for fitting).
         name : str, optional
             Human-readable model name.
+        builder : ModelBuilder, optional
+            The model variant used to fit the posterior. Needed for
+            correct σ_GM dispatch. Defaults to ``FlatConfigModel()``;
+            pass ``RandomSlopesInteractionModel()`` for v8 posteriors.
 
         Returns
         -------
@@ -170,6 +232,7 @@ class BayesEpistemicModel:
         idata = az.from_netcdf(str(path))
         obj = cls(df, cfg=cfg, name=name)
         obj._posterior = PosteriorAccessor(idata, obj.data)
+        obj._builder = builder if builder is not None else FlatConfigModel()
         return obj
 
     # ── Analysis: bias ───────────────────────────────────────────────────
@@ -178,48 +241,185 @@ class BayesEpistemicModel:
         self,
         ref: str | None = None,
         configs: list[str] | None = None,
+        *,
+        denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Compute standardized epistemic bias relative to a reference."""
-        p = self.posterior
-        ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
-        labels, subset_idx = self.data.subset_config_indices(configs)
-        return bias.standardized_bias(
-            p.mu_config(), p.sigma_run(), ref_idx, labels,
-            ci=self.cfg.ci, subset_idx=subset_idx,
-        )
+        """Standardised epistemic bias β relative to a reference.
 
-    def standardized_bias_total_table(
-        self,
-        ref: str | None = None,
-        configs: list[str] | None = None,
-    ) -> pd.DataFrame:
-        """Compute standardized bias including total dispersion."""
+        Canonical denominator is σ_GM (``denominator="gm"``); pass
+        ``"src"`` for the conservative β_src and ``"pred"`` for the
+        generous β_pred. See ``uncertanty_measures.md`` §4.
+        """
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
-        return bias.standardized_bias_total(
-            p.mu_config(), p.sigma_run(), p.sigma_eps(), ref_idx, labels,
-            ci=self.cfg.ci, nu=p.nu(), subset_idx=subset_idx,
+        sigma_denom = self._sigma_denom_for(denominator, ref_idx)
+        return bias.standardized_bias(
+            p.mu_config(), sigma_denom, ref_idx, labels,
+            ci=self.cfg.ci, subset_idx=subset_idx,
         )
 
     def bias_probability_table(
         self,
         *,
-        mode: Literal["exceed_band", "within_equiv", "positive"] = "exceed_band",
-        band: float = 1.0,
-        alpha_equiv: float = 0.5,
+        mode: Literal["exceed_band", "within_equiv", "positive"] = "within_equiv",
+        band: float | None = None,
+        alpha_equiv: float | None = None,
         ref: str | None = None,
         configs: list[str] | None = None,
+        denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Compute posterior probabilities for bias exceedance or equivalence."""
+        """Compute posterior probabilities for bias exceedance or equivalence.
+
+        Defaults pull from ``self.cfg.decision``: ``alpha_equiv=alpha_eq``
+        (0.4) and ``band=alpha_ladder[-1]`` (1.1). Pass explicit values
+        to override.
+        """
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
+        dec = self.cfg.decision
+        if alpha_equiv is None:
+            alpha_equiv = dec.alpha_eq
+        if band is None:
+            band = dec.alpha_ladder[-1]
+        sigma_denom = self._sigma_denom_for(denominator, ref_idx)
         return bias.bias_probability(
-            p.mu_config(), p.sigma_run(), ref_idx, labels,
+            p.mu_config(), sigma_denom, ref_idx, labels,
             mode=mode, band=band, alpha_equiv=alpha_equiv,
             subset_idx=subset_idx,
         )
+
+    def _sigma_denom_for(
+        self, denominator: Literal["src", "gm", "pred"], ref_idx: int,
+    ) -> np.ndarray:
+        """Resolve the requested aleatory denominator to an (S,) array."""
+        if denominator == "src":
+            return self.sigma_src_draws()
+        if denominator == "gm":
+            return self.sigma_GM_draws()
+        if denominator == "pred":
+            return self.sigma_pred_draws(ref_idx=ref_idx)
+        raise ValueError(f"Unknown denominator {denominator!r}")
+
+    # ── Analysis: headline decision report ───────────────────────────────
+
+    def decision_report(
+        self,
+        *,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+        denominators: tuple[str, ...] | None = None,
+        alpha_eq: float | None = None,
+        alpha_ladder: tuple[float, ...] | None = None,
+        p_star: float | None = None,
+    ) -> pd.DataFrame:
+        """Single-shot equivalence decision table per ``uncertanty_measures.md``.
+
+        Computes β_src, β_GM, β_pred (whichever ``denominators`` selects)
+        and the α-ladder P_eq table, then applies the P* gate at α_eq
+        under the canonical σ_GM to label each configuration as
+        ``equivalent`` / ``inequivalent`` / ``undecided``. The
+        ``denominator_robust`` column flags configurations where the
+        three denominators agree on the label.
+
+        Parameters default to ``self.cfg.decision``.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per configuration (ordered by label). Columns:
+
+            - ``Config``
+            - ``beta_{src,gm,pred}_{med,lo,hi}`` for every requested denom
+            - ``P_eq_{\u03b1}_gm`` for each α in the ladder
+            - ``P_eq_{\u03b1_eq}_{src,pred}`` (sensitivity at α_eq)
+            - ``decision`` (``equivalent`` | ``inequivalent`` | ``undecided``)
+            - ``denominator_robust`` (bool)
+        """
+        dec = self.cfg.decision
+        if alpha_eq is None:
+            alpha_eq = dec.alpha_eq
+        if alpha_ladder is None:
+            alpha_ladder = dec.alpha_ladder
+        if p_star is None:
+            p_star = dec.p_star
+        if denominators is None:
+            denominators = dec.denominators
+
+        if alpha_eq not in alpha_ladder:
+            raise ValueError(
+                f"alpha_eq ({alpha_eq}) must be in alpha_ladder {alpha_ladder}."
+            )
+        for d in denominators:
+            if d not in ("src", "gm", "pred"):
+                raise ValueError(f"Unknown denominator {d!r}")
+        if "gm" not in denominators:
+            raise ValueError(
+                "decision_report requires 'gm' among denominators "
+                "(it is the canonical denominator for the P* gate)."
+            )
+
+        p = self.posterior
+        ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        mu_config = p.mu_config()
+        mu_sel = mu_config[:, subset_idx] if subset_idx is not None else mu_config
+        dmu = mu_sel - mu_config[:, [ref_idx]]  # (S, M)
+        ci_lo, ci_hi = self.cfg.ci
+
+        out = pd.DataFrame({"Config": labels})
+
+        # Pre-compute each requested denominator once.
+        denom_arrays: dict[str, np.ndarray] = {
+            d: self._sigma_denom_for(d, ref_idx) for d in denominators
+        }
+
+        # β summaries per denominator
+        for d in denominators:
+            beta = dmu / denom_arrays[d][:, None]
+            out[f"beta_{d}_med"] = np.median(beta, axis=0)
+            out[f"beta_{d}_lo"] = np.quantile(beta, ci_lo, axis=0)
+            out[f"beta_{d}_hi"] = np.quantile(beta, ci_hi, axis=0)
+
+        # P_eq ladder under canonical σ_GM
+        gm_denom = denom_arrays["gm"]
+        beta_gm = dmu / gm_denom[:, None]
+        abs_beta_gm = np.abs(beta_gm)
+        for a in alpha_ladder:
+            out[f"P_eq_{_fmt(a)}_gm"] = np.mean(abs_beta_gm < a, axis=0)
+
+        # P_eq at α_eq under the sensitivity denominators (if requested)
+        for d in denominators:
+            if d == "gm":
+                continue
+            beta_d = dmu / denom_arrays[d][:, None]
+            out[f"P_eq_{_fmt(alpha_eq)}_{d}"] = np.mean(np.abs(beta_d) < alpha_eq, axis=0)
+
+        # Decision column under σ_GM
+        p_eq_col = out[f"P_eq_{_fmt(alpha_eq)}_gm"].to_numpy()
+        decision = np.where(
+            p_eq_col >= p_star, "equivalent",
+            np.where(p_eq_col <= 1.0 - p_star, "inequivalent", "undecided"),
+        )
+        out["decision"] = decision
+
+        # Denominator-robust = all requested denoms give the same decision
+        decisions_by_denom = {}
+        for d in denominators:
+            col = out[f"P_eq_{_fmt(alpha_eq)}_{d}"] if d != "gm" else p_eq_col
+            col_arr = col.to_numpy() if hasattr(col, "to_numpy") else col
+            decisions_by_denom[d] = np.where(
+                col_arr >= p_star, "equivalent",
+                np.where(col_arr <= 1.0 - p_star, "inequivalent", "undecided"),
+            )
+        first_d = denominators[0]
+        robust = np.ones(len(labels), dtype=bool)
+        for d in denominators[1:]:
+            robust &= decisions_by_denom[d] == decisions_by_denom[first_d]
+        out["denominator_robust"] = robust
+
+        return out
 
     # ── Analysis: variance ───────────────────────────────────────────────
 
@@ -362,16 +562,24 @@ class BayesEpistemicModel:
     def equivalence_probability_table(
         self,
         *,
-        alpha: float = 0.5,
+        alpha: float | None = None,
         ref: str | None = None,
         configs: list[str] | None = None,
+        denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Compute equivalence probability at a given tolerance alpha."""
+        """Compute equivalence probability at threshold ``alpha``.
+
+        ``alpha`` defaults to ``cfg.decision.alpha_eq`` (paper default 0.4).
+        ``denominator`` defaults to the canonical σ_GM.
+        """
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
+        sigma_denom = self._sigma_denom_for(denominator, ref_idx)
         return equivalence.equivalence_probability(
-            p.mu_config(), p.sigma_run(), ref_idx, labels,
+            p.mu_config(), sigma_denom, ref_idx, labels,
             alpha=alpha, ci=self.cfg.ci, subset_idx=subset_idx,
         )
 
@@ -381,44 +589,59 @@ class BayesEpistemicModel:
         alphas: np.ndarray | None = None,
         ref: str | None = None,
         configs: list[str] | None = None,
+        denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Sweep equivalence probability across a range of alpha values."""
+        """Sweep equivalence probability across a range of α values."""
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
+        sigma_denom = self._sigma_denom_for(denominator, ref_idx)
         return equivalence.equivalence_sweep(
-            p.mu_config(), p.sigma_run(), ref_idx, labels,
+            p.mu_config(), sigma_denom, ref_idx, labels,
             alphas=alphas, subset_idx=subset_idx,
         )
 
     def epistemic_equivalence_matrix(
         self,
         *,
-        alpha: float = 0.5,
+        alpha: float | None = None,
         configs: list[str] | None = None,
+        denominator: Literal["src", "gm"] = "gm",
     ) -> tuple[list[str], np.ndarray]:
-        """Compute the pairwise epistemic equivalence probability matrix."""
+        """Compute the pairwise epistemic equivalence probability matrix.
+
+        Only 1-D denominators are supported here (pairwise comparisons
+        share a single station-level aleatory scale per draw), so
+        ``denominator="pred"`` is not allowed.
+        """
         p = self.posterior
         labels, subset_idx = self.data.subset_config_indices(configs)
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
+        sigma_denom = self._sigma_denom_for(denominator, p.ref_idx)
         return equivalence.epistemic_equivalence_matrix(
-            p.mu_config(), p.sigma_run(),
+            p.mu_config(), sigma_denom,
             alpha=alpha, labels=labels, subset_idx=subset_idx,
         )
 
     def epistemic_clusters_table(
         self,
         *,
-        alpha: float = 0.5,
+        alpha: float | None = None,
         configs: list[str] | None = None,
         method: str = "average",
         threshold: float | None = None,
         n_clusters: int | None = None,
+        denominator: Literal["src", "gm"] = "gm",
     ) -> pd.DataFrame:
         """Cluster configurations by epistemic equivalence distance."""
         p = self.posterior
         labels, subset_idx = self.data.subset_config_indices(configs)
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
+        sigma_denom = self._sigma_denom_for(denominator, p.ref_idx)
         return equivalence.epistemic_clusters(
-            p.mu_config(), p.sigma_run(),
+            p.mu_config(), sigma_denom,
             alpha=alpha, labels=labels, subset_idx=subset_idx,
             method=method, threshold=threshold, n_clusters=n_clusters,
         )
@@ -511,33 +734,36 @@ class BayesEpistemicModel:
     def plot_standardized_bias(
         self, station_subplots: bool = False, **kw: Any,
     ) -> tuple[plt.Figure, np.ndarray]:
-        """Plot layered standardized-bias figure with density and raw data."""
+        """Plot layered standardized-bias figure with density and raw data.
+
+        Uses σ_GM (canonical denominator) for the standardised axis.
+        """
         bias_df = self.standardized_bias_table()
         from .plots.bias import plot_standardized_bias as _plot
 
-        p = self.posterior
         d = self.data
-        mu_config = p.mu_config()         # (S, K)
-        sigma_run = p.sigma_run()          # (S,)
+        p = self.posterior
+        mu_config = p.mu_config()                 # (S, K)
+        sigma_denom = self.sigma_GM_draws()       # (S,)
         ref_idx = list(d.config_labels).index(d.ref_label)
-        ref_draws = mu_config[:, ref_idx]  # (S,)
+        ref_draws = mu_config[:, ref_idx]         # (S,)
 
-        # Posterior beta draws (for violins) — normalise by median σ_run
-        # so the violin shows Δμ uncertainty without σ_run denominator noise
+        # Posterior beta draws (for violins) — normalise by median σ_GM
+        # so the violin shows Δμ uncertainty without denominator noise
         if "beta_draws" not in kw:
-            sigma_run_med = float(np.median(sigma_run))
-            beta_all = (mu_config - ref_draws[:, None]) / sigma_run_med
+            denom_med = float(np.median(sigma_denom))
+            beta_all = (mu_config - ref_draws[:, None]) / denom_med
             kw["beta_draws"] = beta_all
             kw["beta_labels"] = list(d.config_labels)
 
         # Raw per-runkey dots and config means (for data overlay)
         if "raw_dots" not in kw:
-            sigma_run_med = float(np.median(sigma_run))
+            denom_med = float(np.median(sigma_denom))
             n_configs = d.n_configs
             n_runs = d.n_runs
             labels_list = list(d.config_labels)
 
-            # Per-runkey: (y_config_run_mean - y_ref_run_mean) / sigma_run_med
+            # Per-runkey: (y_config_run_mean - y_ref_run_mean) / denom_med
             raw_dots = np.full((n_configs, n_runs), np.nan)
             ref_by_run = np.zeros(n_runs)
             for r in range(n_runs):
@@ -551,7 +777,7 @@ class BayesEpistemicModel:
                     if mask.any():
                         raw_dots[k, r] = (
                             float(np.mean(d.y[mask])) - ref_by_run[r]
-                        ) / sigma_run_med
+                        ) / denom_med
 
             raw_means = np.nanmean(raw_dots, axis=1)
             kw["raw_dots"] = raw_dots
@@ -562,9 +788,11 @@ class BayesEpistemicModel:
                      ref_label=self.data.ref_label, **kw)
 
     def plot_radar_bias_probability(
-        self, alpha: float = 0.5, **kw: Any,
+        self, alpha: float | None = None, **kw: Any,
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot radar chart of bias exceedance probabilities."""
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
         equiv_df = self.equivalence_probability_table(alpha=alpha)
         from .plots.bias import plot_radar_bias_probability as _plot
         return _plot(equiv_df, alpha=alpha, ref=self.data.ref_label, **kw)
@@ -572,7 +800,7 @@ class BayesEpistemicModel:
     def plot_bias_ridgeplot(
         self, station_subplots: bool = False, **kw: Any,
     ) -> tuple[plt.Figure, np.ndarray]:
-        """Plot ridgeplot of posterior bias densities."""
+        """Plot ridgeplot of posterior β densities (σ_GM denominator by default)."""
         p = self.posterior
         from .plots.bias import plot_bias_ridgeplot as _plot
         extra: dict[str, Any] = {}
@@ -584,7 +812,7 @@ class BayesEpistemicModel:
                 station_labels=list(self.data.station_labels),
             )
         return _plot(
-            p.mu_config(), p.sigma_run(),
+            p.mu_config(), self.sigma_GM_draws(),
             p.config_labels, p.ref_idx,
             **extra, **kw,
         )
@@ -654,17 +882,21 @@ class BayesEpistemicModel:
         )
 
     def plot_equivalence_matrix(
-        self, alpha: float = 0.5, **kw: Any,
+        self, alpha: float | None = None, **kw: Any,
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot equivalence probability heatmap."""
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_matrix as _plot
         return _plot(labels, P_mat, alpha=alpha, **kw)
 
     def plot_equivalence_matrix_with_dendrogram(
-        self, alpha: float = 0.5, **kw: Any,
+        self, alpha: float | None = None, **kw: Any,
     ) -> tuple[plt.Figure, np.ndarray, np.ndarray]:
         """Plot equivalence heatmap with dendrogram overlay."""
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import (
             plot_equivalence_matrix_with_dendrogram as _plot,
@@ -672,9 +904,11 @@ class BayesEpistemicModel:
         return _plot(labels, P_mat, alpha=alpha, **kw)
 
     def plot_equivalence_dendrogram(
-        self, alpha: float = 0.5, **kw: Any,
+        self, alpha: float | None = None, **kw: Any,
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot epistemic-distance dendrogram."""
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_dendrogram as _plot
         return _plot(labels, P_mat, alpha=alpha, **kw)
@@ -686,9 +920,11 @@ class BayesEpistemicModel:
         return _plot(sweep, **kw)
 
     def plot_equivalence_bars_plus_sweep(
-        self, alpha: float = 0.5, **kw: Any,
+        self, alpha: float | None = None, **kw: Any,
     ) -> tuple[plt.Figure, np.ndarray]:
         """Plot combined equivalence bars and sweep lines."""
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
         equiv = self.equivalence_probability_table(alpha=alpha)
         alphas = kw.pop("alphas", None)
         sweep = self.equivalence_sweep_table(alphas=alphas)
