@@ -173,7 +173,7 @@ def plot_bias_forest(
 def _draw_ridges(
     ax: plt.Axes,
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     config_labels: list[str],
     ref_idx: int,
     configs_plot: list[str],
@@ -183,7 +183,7 @@ def _draw_ridges(
     bw_adjust: float = 0.4,
     spacing: float = 1.0,
 ) -> None:
-    """Draw KDE ridges of beta = dmu/sigma_run on a single Axes."""
+    """Draw KDE ridges of β = dmu / sigma_denom on a single Axes."""
     from scipy.stats import gaussian_kde
 
     ref_draws = mu_config[:, ref_idx]
@@ -191,7 +191,7 @@ def _draw_ridges(
 
     for row, lbl in enumerate(configs_plot):
         k = label_to_idx[lbl]
-        beta_draws = (mu_config[:, k] - ref_draws) / sigma_run
+        beta_draws = (mu_config[:, k] - ref_draws) / sigma_denom
 
         try:
             kde = gaussian_kde(beta_draws, bw_method=bw_adjust)
@@ -226,9 +226,21 @@ def _draw_ridges(
     ax.spines["right"].set_visible(False)
 
 
+_DENOM_LATEX = {
+    "GM": r"\sigma_{\mathrm{GM}}",
+    "src": r"\sigma_{\mathrm{src}}",
+    "pred": r"\sigma_{\mathrm{pred}}",
+}
+
+
+def _denom_math(denom_name: str) -> str:
+    """Return a LaTeX string for the given denominator tag (falls back gracefully)."""
+    return _DENOM_LATEX.get(denom_name, rf"\sigma_{{\mathrm{{{denom_name}}}}}")
+
+
 def plot_bias_ridgeplot(
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     config_labels: list[str],
     ref_idx: int,
     *,
@@ -236,6 +248,7 @@ def plot_bias_ridgeplot(
     config_idx: np.ndarray | None = None,
     station_idx: np.ndarray | None = None,
     station_labels: list[str] | None = None,
+    denom_name: str = "GM",
     overlap: float = 0.6,
     figsize: tuple[float, float] | None = None,
     bw_adjust: float = 0.4,
@@ -243,12 +256,16 @@ def plot_bias_ridgeplot(
     prefix: str = "",
     filename: str = "bias_ridgeplot.pdf",
 ) -> tuple[plt.Figure, np.ndarray]:
-    r"""Ridgeplot of posterior beta = dmu/sigma_run distributions.
+    r"""Ridgeplot of posterior β = Δμ / σ_denom distributions.
 
     When station data is provided, draws one panel per station with the
-    observed data overlaid as dots.
+    observed data overlaid as dots. The ``denom_name`` label (``"GM"``,
+    ``"src"``, ``"pred"``) is baked into the x-axis label so the figure
+    self-documents which β variant it shows.
     """
     out_dir = ensure_dir(out_dir)
+    denom_latex = _denom_math(denom_name)
+    x_label = rf"$\beta = \Delta\mu\,/\,{denom_latex}$"
 
     labels_sorted = order_config_labels(config_labels)
     label_to_idx = {lbl: i for i, lbl in enumerate(config_labels)}
@@ -270,12 +287,12 @@ def plot_bias_ridgeplot(
         )
         axes = axes.ravel()
 
-        sigma_run_med = float(np.median(sigma_run))
+        denom_med = float(np.median(sigma_denom))
 
         for s, sta in enumerate(station_labels):
             ax = axes[s]
             _draw_ridges(
-                ax, mu_config, sigma_run, config_labels, ref_idx,
+                ax, mu_config, sigma_denom, config_labels, ref_idx,
                 configs_plot, label_to_idx,
                 overlap=overlap, bw_adjust=bw_adjust, spacing=spacing,
             )
@@ -289,7 +306,7 @@ def plot_bias_ridgeplot(
                 obs_mask = sta_mask & (config_idx == k)
                 if not obs_mask.any():
                     continue
-                beta_obs = (y_obs[obs_mask] - y_ref_mean) / sigma_run_med
+                beta_obs = (y_obs[obs_mask] - y_ref_mean) / denom_med
                 baseline = row * spacing
                 jitter = np.random.default_rng(42 + s).uniform(
                     0.05 * spacing, 0.25 * spacing, size=len(beta_obs),
@@ -301,7 +318,7 @@ def plot_bias_ridgeplot(
                     zorder=n + 10,
                 )
 
-            ax.set_xlabel(r"$\beta = \Delta\mu\,/\,\sigma_{\mathrm{run}}$")
+            ax.set_xlabel(x_label)
             ax.set_title(str(sta), fontsize=9)
             if s > 0:
                 ax.set_yticklabels([])
@@ -316,11 +333,11 @@ def plot_bias_ridgeplot(
             figsize = (HALF_WIDTH, 4.3)
         fig, ax = plt.subplots(figsize=figsize)
         _draw_ridges(
-            ax, mu_config, sigma_run, config_labels, ref_idx,
+            ax, mu_config, sigma_denom, config_labels, ref_idx,
             configs_plot, label_to_idx,
             overlap=overlap, bw_adjust=bw_adjust, spacing=spacing,
         )
-        ax.set_xlabel(r"$\beta = \Delta\mu\,/\,\sigma_{\mathrm{run}}$")
+        ax.set_xlabel(x_label)
         ax.set_title(f"Posterior bias distributions vs {config_labels[ref_idx]}")
         axes = np.array([ax])
 
