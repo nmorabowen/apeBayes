@@ -1,10 +1,11 @@
 """
 Configuration dataclasses for apeBayes.
 
-Three concerns, three configs:
+Four concerns, four configs:
   - FactorSpec     : describes one axis of the epistemic tensor
   - PriorConfig    : prior hyper-parameters (swappable per model variant)
   - SamplingConfig : MCMC tuning knobs
+  - DecisionConfig : α-ladder and P* gate for equivalence decisions
   - ModelConfig    : ties everything together (factors, columns, reference, …)
 """
 
@@ -97,6 +98,68 @@ class SamplingConfig:
             raise ValueError(f"target_accept must be in (0,1), got {self.target_accept}")
 
 
+# ── Decision configuration ──────────────────────────────────────────────────
+
+# Allowed denominator identifiers for standardised bias β.
+#   src  -> σ_src                         (v6-era conservative)
+#   gm   -> σ_GM = √(σ_src² + σ_inter²)   (canonical, v8)
+#   pred -> σ_pred (adds residual)        (full-predictive generous)
+_ALLOWED_DENOMINATORS: tuple[str, ...] = ("src", "gm", "pred")
+
+
+@dataclass(frozen=True)
+class DecisionConfig:
+    """Equivalence-decision parameters per ``uncertanty_measures.md`` §5-§6.
+
+    Parameters
+    ----------
+    alpha_eq : float
+        Primary equivalence threshold on the β scale. Paper default 0.4
+        corresponds to the "three-halves" code-amplification reading.
+    alpha_ladder : tuple[float, ...]
+        Reported α values for the P_eq table. Must contain ``alpha_eq``.
+        Default ``(0.4, 0.7, 1.1)``: equivalence / clearly biased / severely
+        biased rungs.
+    p_star : float
+        Probability gate for the equivalence call. Must lie in ``(0, 1)``.
+        Default 0.95 matches moderate-consequence reliability conventions.
+    denominators : tuple[str, ...]
+        Subset of ``{"src", "gm", "pred"}`` indicating which β variants to
+        compute. ``"gm"`` is canonical; ``"src"`` and ``"pred"`` are the
+        sensitivity endpoints.
+    """
+
+    alpha_eq: float = 0.4
+    alpha_ladder: tuple[float, ...] = (0.4, 0.7, 1.1)
+    p_star: float = 0.95
+    denominators: tuple[str, ...] = ("src", "gm", "pred")
+
+    def __post_init__(self) -> None:
+        if not (isinstance(self.alpha_eq, (int, float)) and self.alpha_eq > 0):
+            raise ValueError(f"alpha_eq must be positive, got {self.alpha_eq!r}")
+        if len(self.alpha_ladder) == 0:
+            raise ValueError("alpha_ladder must be non-empty.")
+        for a in self.alpha_ladder:
+            if not (isinstance(a, (int, float)) and a > 0):
+                raise ValueError(f"alpha_ladder entries must be positive, got {a!r}")
+        if self.alpha_eq not in self.alpha_ladder:
+            raise ValueError(
+                f"alpha_eq ({self.alpha_eq}) must be a member of alpha_ladder "
+                f"({self.alpha_ladder})."
+            )
+        if not (isinstance(self.p_star, (int, float)) and 0 < self.p_star < 1):
+            raise ValueError(f"p_star must lie in (0, 1), got {self.p_star!r}")
+        if len(self.denominators) == 0:
+            raise ValueError("denominators must be non-empty.")
+        for d in self.denominators:
+            if d not in _ALLOWED_DENOMINATORS:
+                raise ValueError(
+                    f"denominator {d!r} not in {_ALLOWED_DENOMINATORS}."
+                )
+        if len(set(self.denominators)) != len(self.denominators):
+            raise ValueError(f"denominators must be unique, got {self.denominators}")
+
+
 # ── Model configuration ─────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -128,6 +191,8 @@ class ModelConfig:
         Prior hyper-parameters.
     sampling : SamplingConfig
         MCMC sampler settings.
+    decision : DecisionConfig
+        Equivalence-decision parameters (α-ladder, P* gate, denominator set).
     """
 
     factors: list[FactorSpec] = field(default_factory=lambda: [
@@ -153,6 +218,7 @@ class ModelConfig:
     # Sub-configs
     priors: PriorConfig = field(default_factory=PriorConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
+    decision: DecisionConfig = field(default_factory=DecisionConfig)
 
     @property
     def ci_lo(self) -> float:

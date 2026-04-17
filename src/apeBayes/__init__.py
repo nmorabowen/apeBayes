@@ -11,7 +11,7 @@ Quick start
 
 from __future__ import annotations
 
-from .config import FactorSpec, ModelConfig, PriorConfig, SamplingConfig
+from .config import DecisionConfig, FactorSpec, ModelConfig, PriorConfig, SamplingConfig
 from .data import EpistemicDataset, encode_dataset
 from .facade import BayesEpistemicModel
 from .model import (
@@ -29,6 +29,8 @@ from .posterior import PosteriorAccessor
 __all__ = [
     # Main entry points
     "BayesEpistemicModel",
+    # Configuration
+    "DecisionConfig",
     "EDPSpec",
     # Data
     "EpistemicDataset",
