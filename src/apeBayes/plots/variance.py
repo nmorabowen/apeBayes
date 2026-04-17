@@ -178,7 +178,7 @@ def plot_variance_components_lollipop(
     """Lollipop chart of all scale parameters with CI whiskers.
 
     Expects ``comp_df`` from ``variance_component_table()`` with columns:
-    component, med, lo, hi.  Works for any mix of sigma_run, sigma_eps[k], nu.
+    component, med, lo, hi.  Works for any mix of sigma_src, sigma_eps[k], nu.
 
     When nu is present, it gets its own right-hand panel so its wide CI
     doesn't compress the sigma scales.
@@ -373,21 +373,21 @@ def plot_decomposition_bars(
 def plot_sigma_stability(
     comp_df: pd.DataFrame,
     *,
-    sigma_run_med: float | None = None,
+    sigma_src_med: float | None = None,
     figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
     out_dir: str | Path | None = None,
     prefix: str = "",
     filename: str = "sigma_stability.pdf",
 ) -> tuple[plt.Figure, plt.Axes]:
-    r"""σ_eps per config as lollipop with σ_run reference line.
+    r"""σ_eps per config as lollipop with σ_src reference line.
 
     Parameters
     ----------
     comp_df : DataFrame
         Output of ``variance_component_table()`` with columns:
         component, med, lo, hi.
-    sigma_run_med : float
-        Posterior median of σ_run (drawn as horizontal reference).
+    sigma_src_med : float
+        Posterior median of σ_src (drawn as horizontal reference).
     """
     out_dir = ensure_dir(out_dir)
     df = comp_df.copy()
@@ -439,9 +439,9 @@ def plot_sigma_stability(
         ax.text(hi[i] + x_max * 0.03, y[i], f"{med[i]:.3f}",
                 va="center", color="0.3")
 
-    if sigma_run_med is not None:
-        ax.axvline(sigma_run_med, color=VARIANCE_COLORS["between_rupture"], lw=1.3, ls="--",
-                   label=rf"$\sigma_{{\mathrm{{run}}}} = {sigma_run_med:.3f}$")
+    if sigma_src_med is not None:
+        ax.axvline(sigma_src_med, color=VARIANCE_COLORS["between_rupture"], lw=1.3, ls="--",
+                   label=rf"$\sigma_{{\mathrm{{src}}}} = {sigma_src_med:.3f}$")
 
     ax.set_yticks(y)
     ax.set_yticklabels(labels)
@@ -457,7 +457,7 @@ def plot_sigma_stability(
 # ── Variance ratio: σ_eps / σ_run ─────────────────────────────────────
 
 def plot_variance_ratio(
-    sigma_run: np.ndarray,
+    sigma_src: np.ndarray,
     sigma_eps: np.ndarray,
     labels: list[str],
     ci: tuple[float, float] = (0.05, 0.95),
@@ -468,18 +468,18 @@ def plot_variance_ratio(
     prefix: str = "",
     filename: str = "variance_ratio.pdf",
 ) -> tuple[plt.Figure, plt.Axes]:
-    r"""σ_eps^eff / σ_run per config — residual vs aleatory ratio."""
+    r"""σ_eps^eff / σ_src per config — residual vs source-variability ratio."""
     from .helpers import case_colors_for_labels
     out_dir = ensure_dir(out_dir)
 
-    t_factor = np.ones_like(sigma_run)
+    t_factor = np.ones_like(sigma_src)
     if nu is not None:
         t_factor = np.sqrt(nu / np.maximum(nu - 2.0, 1e-12))
 
     if sigma_eps.ndim == 1:
         ratio = np.repeat((sigma_eps * t_factor)[:, None], len(labels), axis=1)
     else:
-        ratio = (sigma_eps * t_factor[:, None]) / sigma_run[:, None]
+        ratio = (sigma_eps * t_factor[:, None]) / sigma_src[:, None]
 
     labels = order_config_labels(labels)
     ci_lo, ci_hi = ci
@@ -500,8 +500,8 @@ def plot_variance_ratio(
     ax.set_yticks(y)
     ax.set_yticklabels(labels)
     ax.invert_yaxis()
-    ax.set_xlabel(r"$\sigma_{\varepsilon}^{\mathrm{eff}} / \sigma_{\mathrm{run}}$")
-    ax.set_title("Residual vs run variability ratio")
+    ax.set_xlabel(r"$\sigma_{\varepsilon}^{\mathrm{eff}} / \sigma_{\mathrm{src}}$")
+    ax.set_title("Residual vs source variability ratio")
     ax.grid(True, axis="x", alpha=0.3, lw=0.4)
 
     savefig(fig, out_dir, filename, prefix=prefix)
@@ -571,7 +571,7 @@ def plot_level_rankings(
 
 def plot_sigma_stability_triptych(
     sigma_eps: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_src: np.ndarray,  # noqa: ARG001 — kept for positional compatibility with facade dispatcher
     labels: list[str],
     ref_idx: int,
     ci: tuple[float, float] = (0.05, 0.95),

@@ -849,17 +849,16 @@ class BayesEpistemicModel:
         """Plot per-configuration residual-scale stability."""
         vc = self.variance_component_table()
         p = self.posterior
-        sigma_run_draws = p.sigma_run()
-        sigma_run_med = float(np.median(sigma_run_draws))
+        sigma_src_med = float(np.median(p.sigma_src()))
         from .plots.variance import plot_sigma_stability as _plot
-        return _plot(vc, sigma_run_med=sigma_run_med, **kw)
+        return _plot(vc, sigma_src_med=sigma_src_med, **kw)
 
     def plot_variance_ratio(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
         """Plot variance-ratio forest across configurations."""
         p = self.posterior
         from .plots.variance import plot_variance_ratio as _plot
         return _plot(
-            p.sigma_run(), p.sigma_eps(),
+            p.sigma_src(), p.sigma_eps(),
             p.config_labels, ci=self.cfg.ci, nu=p.nu(), **kw,
         )
 
@@ -877,7 +876,7 @@ class BayesEpistemicModel:
         p = self.posterior
         from .plots.variance import plot_sigma_stability_triptych as _plot
         return _plot(
-            p.sigma_eps(), p.sigma_run(), p.config_labels,
+            p.sigma_eps(), p.sigma_src(), p.config_labels,
             p.ref_idx, ci=self.cfg.ci, nu=p.nu(), **kw,
         )
 
