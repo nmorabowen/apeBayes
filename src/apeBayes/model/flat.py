@@ -117,7 +117,7 @@ class FlatConfigModel:
                 )
 
             # ── Run random effects (NON-CENTERED parameterization) ───────
-            sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_run)
+            sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_src)
             n_rk = data.n_runs
             if n_rk > 1:
                 # Non-centered: sample z ~ N(0,1), then b = sigma_run * z

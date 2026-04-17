@@ -132,7 +132,7 @@ class HierarchicalConfigModel:
                 )
 
             # ── Run random effects (NON-CENTERED parameterization) ───────
-            sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_run)
+            sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_src)
             n_rk = data.n_runs
             if n_rk > 1:
                 z_run_free = pm.Normal(

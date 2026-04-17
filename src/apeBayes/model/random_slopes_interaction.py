@@ -195,7 +195,7 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
                 )
 
             # ── Run random effects (sum-to-zero) ────────────────────────
-            sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_run)
+            sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_src)
             if n_rk > 1:
                 if self._centered_runs:
                     b_run_free = pm.Normal(

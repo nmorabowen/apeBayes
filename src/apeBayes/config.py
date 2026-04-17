@@ -51,7 +51,7 @@ class PriorConfig:
     sigma_station: float = 3.0      # station fixed effects
 
     # Random effects
-    sigma_run: float = 5.0          # run-level RE scale prior
+    sigma_src: float = 5.0          # source (rupture) SD prior; PyMC var stays "sigma_run"
 
     # Observation noise
     sigma_eps: float = 5.0          # residual SD prior
@@ -64,7 +64,7 @@ class PriorConfig:
             "sigma_intercept",
             "sigma_config",
             "sigma_station",
-            "sigma_run",
+            "sigma_src",
             "sigma_eps",
             "nu_prior_lambda",
         ]:
