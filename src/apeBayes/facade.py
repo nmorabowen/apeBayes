@@ -30,6 +30,7 @@ from .model.hierarchical import HierarchicalConfigModel
 from .model.random_slopes import RandomSlopesModel
 from .model.random_slopes_interaction import RandomSlopesInteractionModel
 from .model.sampling import sample_model
+from .plots.style import CMAP_DIV, CMAP_SEQ, FULL_WIDTH, HALF_WIDTH
 from .posterior.accessor import PosteriorAccessor
 
 if TYPE_CHECKING:
@@ -797,31 +798,96 @@ class BayesEpistemicModel:
         )
 
     # ── Plots ───────────────────────────────────────────────────────────
+    #
+    # Every plot method exposes the underlying plot function's user-facing
+    # kwargs explicitly. Plumbing kwargs (draw arrays, indices, column
+    # names) are computed by the facade and not surfaced. No **kwargs
+    # escape hatch — IDE autocomplete and the type checker see the real
+    # parameter surface.
 
-    def plot_rhat_bar(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    # Diagnostics ........................................................
+
+    def plot_rhat_bar(
+        self,
+        *,
+        top_n: int | None = 10,
+        threshold: float = 1.01,
+        figsize: tuple[float, float] = (HALF_WIDTH, HALF_WIDTH),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "rhat_bar.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot R-hat convergence bar chart."""
         from .plots.diagnostics import plot_rhat_bar as _plot
-        return _plot(self.rhat_table(), **kw)
+        return _plot(
+            self.rhat_table(),
+            top_n=top_n, threshold=threshold,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_ess_bar(self, kind: str = "bulk", **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_ess_bar(
+        self,
+        *,
+        kind: str = "bulk",
+        top_n: int | None = 10,
+        threshold: float = 400.0,
+        figsize: tuple[float, float] = (HALF_WIDTH, HALF_WIDTH),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str | None = None,
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot effective sample size bar chart."""
         from .plots.diagnostics import plot_ess_bar as _plot
-        return _plot(self.ess_table(), kind=kind, **kw)
+        return _plot(
+            self.ess_table(),
+            kind=kind, top_n=top_n, threshold=threshold,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_mu_triptych(self, ref: str | None = None, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+    # Bias .............................................................
+
+    def plot_mu_triptych(
+        self,
+        *,
+        ref: str | None = None,
+        original_edp_scale: bool = False,
+        annot: bool = True,
+        fmt_mu: str = ".2f",
+        fmt_dmu: str = ".2f",
+        fmt_ratio: str = ".2f",
+        cmap: str = CMAP_DIV,
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+    ) -> tuple[plt.Figure, np.ndarray]:
         """Plot three-panel heatmap of absolute mu, delta-mu, and median ratio."""
         ref = ref or self.data.ref_label
         mu_hat = self.mu_hat_table()
         bias_df = self.standardized_bias_table()
         from .plots.bias import plot_mu_triptych as _plot
-        return _plot(mu_hat, bias_df, ref=ref, **kw)
+        return _plot(
+            mu_hat, bias_df,
+            ref=ref, original_edp_scale=original_edp_scale,
+            annot=annot, fmt_mu=fmt_mu, fmt_dmu=fmt_dmu, fmt_ratio=fmt_ratio,
+            cmap=cmap, figsize=figsize, out_dir=out_dir, prefix=prefix,
+        )
 
     def plot_standardized_bias(
-        self, station_subplots: bool = False, **kw: Any,
+        self,
+        *,
+        station_subplots: bool = False,
+        dot_alpha: float = 0.28,
+        posterior_style: str = "violin",
+        figsize: tuple[float, float] | None = None,
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "standardized_bias.pdf",
     ) -> tuple[plt.Figure, np.ndarray]:
         """Plot layered standardized-bias figure with density and raw data.
 
         Uses σ_GM (canonical denominator) for the standardised axis.
+        The β draws, raw-data dots, and reference label are computed
+        from the fit and injected automatically.
         """
         bias_df = self.standardized_bias_table()
         from .plots.bias import plot_standardized_bias as _plot
@@ -832,60 +898,78 @@ class BayesEpistemicModel:
         sigma_denom = self.sigma_GM_draws()       # (S,)
         ref_idx = list(d.config_labels).index(d.ref_label)
         ref_draws = mu_config[:, ref_idx]         # (S,)
+        denom_med = float(np.median(sigma_denom))
 
         # Posterior beta draws (for violins) — normalise by median σ_GM
-        # so the violin shows Δμ uncertainty without denominator noise
-        if "beta_draws" not in kw:
-            denom_med = float(np.median(sigma_denom))
-            beta_all = (mu_config - ref_draws[:, None]) / denom_med
-            kw["beta_draws"] = beta_all
-            kw["beta_labels"] = list(d.config_labels)
+        # so the violin shows Δμ uncertainty without denominator noise.
+        beta_draws = (mu_config - ref_draws[:, None]) / denom_med
+        beta_labels = list(d.config_labels)
 
-        # Raw per-runkey dots and config means (for data overlay)
-        if "raw_dots" not in kw:
-            denom_med = float(np.median(sigma_denom))
-            n_configs = d.n_configs
-            n_runs = d.n_runs
-            labels_list = list(d.config_labels)
-
-            # Per-runkey: (y_config_run_mean - y_ref_run_mean) / denom_med
-            raw_dots = np.full((n_configs, n_runs), np.nan)
-            ref_by_run = np.zeros(n_runs)
+        # Raw per-runkey dots and config means (for data overlay).
+        n_configs = d.n_configs
+        n_runs = d.n_runs
+        raw_dots = np.full((n_configs, n_runs), np.nan)
+        ref_by_run = np.zeros(n_runs)
+        for r in range(n_runs):
+            ref_mask = (d.config_idx == ref_idx) & (d.run_idx == r)
+            if ref_mask.any():
+                ref_by_run[r] = float(np.mean(d.y[ref_mask]))
+        for k in range(n_configs):
             for r in range(n_runs):
-                ref_mask = (d.config_idx == ref_idx) & (d.run_idx == r)
-                if ref_mask.any():
-                    ref_by_run[r] = float(np.mean(d.y[ref_mask]))
+                mask = (d.config_idx == k) & (d.run_idx == r)
+                if mask.any():
+                    raw_dots[k, r] = (
+                        float(np.mean(d.y[mask])) - ref_by_run[r]
+                    ) / denom_med
+        raw_means = np.nanmean(raw_dots, axis=1)
 
-            for k in range(n_configs):
-                for r in range(n_runs):
-                    mask = (d.config_idx == k) & (d.run_idx == r)
-                    if mask.any():
-                        raw_dots[k, r] = (
-                            float(np.mean(d.y[mask])) - ref_by_run[r]
-                        ) / denom_med
-
-            raw_means = np.nanmean(raw_dots, axis=1)
-            kw["raw_dots"] = raw_dots
-            kw["raw_means"] = raw_means
-            kw["raw_labels"] = labels_list
-
-        return _plot(bias_df, station_subplots=station_subplots,
-                     ref_label=self.data.ref_label, **kw)
+        return _plot(
+            bias_df,
+            beta_draws=beta_draws, beta_labels=beta_labels,
+            raw_dots=raw_dots, raw_means=raw_means, raw_labels=beta_labels,
+            station_subplots=station_subplots,
+            ref_label=d.ref_label,
+            dot_alpha=dot_alpha, posterior_style=posterior_style,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
     def plot_radar_bias_probability(
-        self, alpha: float | None = None, **kw: Any,
+        self,
+        *,
+        alpha: float | None = None,
+        fill_alpha: float = 0.15,
+        figsize: tuple[float, float] = (HALF_WIDTH, HALF_WIDTH),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "radar_bias_probability.pdf",
     ) -> tuple[plt.Figure, plt.Axes]:
-        """Plot radar chart of bias exceedance probabilities."""
+        """Plot radar chart of equivalence probabilities per configuration.
+
+        ``alpha`` defaults to ``cfg.decision.alpha_eq``.
+        """
         if alpha is None:
             alpha = self.cfg.decision.alpha_eq
         equiv_df = self.equivalence_probability_table(alpha=alpha)
         from .plots.bias import plot_radar_bias_probability as _plot
-        return _plot(equiv_df, alpha=alpha, ref=self.data.ref_label, **kw)
+        return _plot(
+            equiv_df, alpha=alpha, ref=self.data.ref_label,
+            fill_alpha=fill_alpha,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
     def plot_bias_ridgeplot(
-        self, station_subplots: bool = False, **kw: Any,
+        self,
+        *,
+        station_subplots: bool = False,
+        denom_name: str = "GM",
+        overlap: float = 0.6,
+        bw_adjust: float = 0.4,
+        figsize: tuple[float, float] | None = None,
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "bias_ridgeplot.pdf",
     ) -> tuple[plt.Figure, np.ndarray]:
-        """Plot ridgeplot of posterior β densities (σ_GM denominator by default)."""
+        """Plot ridgeplot of posterior β densities (σ_GM denominator)."""
         p = self.posterior
         from .plots.bias import plot_bias_ridgeplot as _plot
         extra: dict[str, Any] = {}
@@ -899,84 +983,199 @@ class BayesEpistemicModel:
         return _plot(
             p.mu_config(), self.sigma_GM_draws(),
             p.config_labels, p.ref_idx,
-            **extra, **kw,
+            denom_name=denom_name, overlap=overlap, bw_adjust=bw_adjust,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+            **extra,
         )
 
-    def plot_bias_probability(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
-        """Plot bar chart of bias exceedance probabilities."""
-        prob_df = self.bias_probability_table(**{
-            k: kw.pop(k)
-            for k in list(kw)
-            if k in ("mode", "band", "alpha_equiv", "ref", "configs")
-        })
-        from .plots.bias import plot_bias_probability as _plot
-        return _plot(prob_df, **kw)
+    def plot_bias_probability(
+        self,
+        *,
+        mode: Literal["exceed_band", "within_equiv", "positive"] = "within_equiv",
+        alpha_equiv: float | None = None,
+        band: float | None = None,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+        denominator: Literal["src", "gm", "pred"] = "gm",
+        threshold_label: str = "",
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "bias_probability.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
+        """Plot bar chart of β probability under the requested mode.
 
-    def plot_variance_budget(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+        The first six kwargs are forwarded to :meth:`bias_probability_table`;
+        the rest control the plot. ``prob_col='prob'`` is pinned internally
+        to match the table's output column.
+        """
+        prob_df = self.bias_probability_table(
+            mode=mode, alpha_equiv=alpha_equiv, band=band,
+            ref=ref, configs=configs, denominator=denominator,
+        )
+        from .plots.bias import plot_bias_probability as _plot
+        return _plot(
+            prob_df,
+            prob_col="prob", label_col="Config",
+            threshold_label=threshold_label,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
+
+    # Variance ..........................................................
+
+    def plot_variance_budget(
+        self,
+        *,
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "variance_budget.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot variance-budget bar chart."""
         vb = self.variance_budget_table()
         from .plots.variance import plot_variance_budget_bars as _plot
-        return _plot(vb, **kw)
+        return _plot(
+            vb, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_variance_budget_waterfall(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_variance_budget_waterfall(
+        self,
+        *,
+        figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "variance_budget_waterfall.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot variance-budget waterfall chart."""
         vb = self.variance_budget_table()
         from .plots.variance import plot_variance_budget_waterfall as _plot
-        return _plot(vb, **kw)
+        return _plot(
+            vb, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_decomposition_bars(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_decomposition_bars(
+        self,
+        *,
+        figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "decomposition_bars.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot axis-wise decomposition bar chart."""
         decomp = self.axiswise_decomposition_table()
         from .plots.variance import plot_decomposition_bars as _plot
-        return _plot(decomp, **kw)
+        return _plot(
+            decomp, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_sigma_stability(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_sigma_stability(
+        self,
+        *,
+        figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "sigma_stability.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot per-configuration residual-scale stability."""
         vc = self.variance_component_table()
-        p = self.posterior
-        sigma_src_med = float(np.median(p.sigma_src()))
+        sigma_src_med = float(np.median(self.posterior.sigma_src()))
         from .plots.variance import plot_sigma_stability as _plot
-        return _plot(vc, sigma_src_med=sigma_src_med, **kw)
+        return _plot(
+            vc, sigma_src_med=sigma_src_med,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_variance_ratio(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_variance_ratio(
+        self,
+        *,
+        figsize: tuple[float, float] = (HALF_WIDTH, 3.5),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "variance_ratio.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot variance-ratio forest across configurations."""
         p = self.posterior
         from .plots.variance import plot_variance_ratio as _plot
         return _plot(
             p.sigma_src(), p.sigma_eps(),
-            p.config_labels, ci=self.cfg.ci, nu=p.nu(), **kw,
+            p.config_labels, ci=self.cfg.ci, nu=p.nu(),
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
         )
 
-    def plot_level_rankings(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+    def plot_level_rankings(
+        self,
+        *,
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "level_rankings.pdf",
+    ) -> tuple[plt.Figure, np.ndarray]:
         """Plot tier and case level rankings."""
         tier_tbl, case_tbl, _ = self.level_ranking_tables()
-        from .plots.variance import plot_level_rankings as _plot
         factor_names = (self.cfg.factors[0].name, self.cfg.factors[1].name)
-        return _plot(tier_tbl, case_tbl, factor_names=factor_names, **kw)
+        from .plots.variance import plot_level_rankings as _plot
+        return _plot(
+            tier_tbl, case_tbl, factor_names=factor_names,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
     def plot_sigma_stability_triptych(
-        self, **kw: Any,
+        self,
+        *,
+        order_by: str = "stability",
+        figsize: tuple[float, float] = (FULL_WIDTH, 4.5),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "sigma_stability_triptych.pdf",
     ) -> tuple[plt.Figure, np.ndarray]:
         """Plot three-panel sigma stability figure."""
         p = self.posterior
         from .plots.variance import plot_sigma_stability_triptych as _plot
         return _plot(
-            p.sigma_eps(), p.sigma_src(), p.config_labels,
-            p.ref_idx, ci=self.cfg.ci, nu=p.nu(), **kw,
+            p.sigma_eps(), p.sigma_src(), p.config_labels, p.ref_idx,
+            ci=self.cfg.ci, nu=p.nu(),
+            order_by=order_by,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
         )
 
+    # Equivalence .......................................................
+
     def plot_equivalence_matrix(
-        self, alpha: float | None = None, **kw: Any,
+        self,
+        *,
+        alpha: float | None = None,
+        annot: bool = True,
+        fmt: str = ".2f",
+        cmap: str = CMAP_SEQ,
+        figsize: tuple[float, float] = (HALF_WIDTH, HALF_WIDTH),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "equivalence_matrix.pdf",
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot equivalence probability heatmap."""
         if alpha is None:
             alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_matrix as _plot
-        return _plot(labels, P_mat, alpha=alpha, **kw)
+        return _plot(
+            labels, P_mat, alpha=alpha,
+            annot=annot, fmt=fmt, cmap=cmap,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
     def plot_equivalence_matrix_with_dendrogram(
-        self, alpha: float | None = None, **kw: Any,
+        self,
+        *,
+        alpha: float | None = None,
+        method: str = "average",
+        cluster_order: bool = True,
+        annot: bool = True,
+        fmt: str = ".2f",
+        cmap: str = CMAP_SEQ,
+        figsize: tuple[float, float] = (FULL_WIDTH, 5.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "equivalence_matrix_dendro.pdf",
     ) -> tuple[plt.Figure, np.ndarray, np.ndarray]:
         """Plot equivalence heatmap with dendrogram overlay."""
         if alpha is None:
@@ -985,41 +1184,82 @@ class BayesEpistemicModel:
         from .plots.equivalence import (
             plot_equivalence_matrix_with_dendrogram as _plot,
         )
-        return _plot(labels, P_mat, alpha=alpha, **kw)
+        return _plot(
+            labels, P_mat, alpha=alpha,
+            method=method, cluster_order=cluster_order,
+            annot=annot, fmt=fmt, cmap=cmap,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
     def plot_equivalence_dendrogram(
-        self, alpha: float | None = None, **kw: Any,
+        self,
+        *,
+        alpha: float | None = None,
+        method: str = "average",
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "equivalence_dendrogram.pdf",
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot epistemic-distance dendrogram."""
         if alpha is None:
             alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_dendrogram as _plot
-        return _plot(labels, P_mat, alpha=alpha, **kw)
+        return _plot(
+            labels, P_mat, alpha=alpha, method=method,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_equivalence_sweep(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_equivalence_sweep(
+        self,
+        *,
+        figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "equivalence_sweep.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot equivalence probability sweep across alpha values."""
         sweep = self.equivalence_sweep_table()
         from .plots.equivalence import plot_equivalence_sweep as _plot
-        return _plot(sweep, **kw)
+        return _plot(
+            sweep, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
     def plot_equivalence_bars_plus_sweep(
-        self, alpha: float | None = None, **kw: Any,
+        self,
+        *,
+        alpha: float | None = None,
+        alphas: np.ndarray | None = None,
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "equivalence_bars_sweep.pdf",
     ) -> tuple[plt.Figure, np.ndarray]:
         """Plot combined equivalence bars and sweep lines."""
         if alpha is None:
             alpha = self.cfg.decision.alpha_eq
         equiv = self.equivalence_probability_table(alpha=alpha)
-        alphas = kw.pop("alphas", None)
         sweep = self.equivalence_sweep_table(alphas=alphas)
         from .plots.equivalence import (
             plot_equivalence_bars_plus_sweep as _plot,
         )
-        return _plot(equiv, sweep, alpha=alpha, **kw)
+        return _plot(
+            equiv, sweep, alpha=alpha,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    # ── Interaction plots (v8+, v9+) ─────────────────────────────────────
+    # Interaction (v8+, v9+) ............................................
 
-    def plot_interaction_heatmap(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_interaction_heatmap(
+        self,
+        *,
+        annotate: bool = True,
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "interaction_heatmap.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot heatmap of the shared station-rupture interaction.
 
         Requires a v8+ interaction model in the posterior.
@@ -1031,19 +1271,31 @@ class BayesEpistemicModel:
                 "RandomSlopesInteractionModel (v8+) to use this plot."
             )
         gamma = p.gamma_sr()
-        assert gamma is not None  # guaranteed by has_interaction guard
+        assert gamma is not None
         from .plots.interaction import plot_interaction_heatmap as _plot
         return _plot(
             gamma,
             list(self.data.station_labels),
             list(self.data.run_labels),
-            **kw,
+            annotate=annotate,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
         )
 
-    def plot_interaction_by_case(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+    def plot_interaction_by_case(
+        self,
+        *,
+        annotate: bool = True,
+        share_scale: bool = True,
+        ncols: int | None = None,
+        figsize: tuple[float, float] | None = None,
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "interaction_by_case.pdf",
+    ) -> tuple[plt.Figure, np.ndarray]:
         """Plot per-Case panel of effective interactions.
 
-        Works for both v8 and v9 interaction models.
+        Works for both v8 and v9 interaction models. ``xi_case`` is
+        auto-detected from the posterior when present.
         """
         p = self.posterior
         if not p.has_interaction:
@@ -1052,7 +1304,7 @@ class BayesEpistemicModel:
                 "RandomSlopesInteractionModel (v8+) to use this plot."
             )
         gamma = p.gamma_sr()
-        assert gamma is not None  # guaranteed by has_interaction guard
+        assert gamma is not None
         case_labels = p.case_labels
         if case_labels is None:
             case_labels = list(self.data.factor_levels[
@@ -1065,13 +1317,25 @@ class BayesEpistemicModel:
             list(self.data.station_labels),
             list(self.data.run_labels),
             xi_case_draws=p.xi_case(),
-            **kw,
+            annotate=annotate, share_scale=share_scale, ncols=ncols,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
         )
 
-    def plot_interaction_forest(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_interaction_forest(
+        self,
+        *,
+        ci: tuple[float, float] | None = None,
+        sort: bool = True,
+        max_cells: int | None = None,
+        figsize: tuple[float, float] = (HALF_WIDTH, 4.3),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "interaction_forest.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot forest plot of interaction cells with credible intervals.
 
-        Requires a v8+ interaction model in the posterior.
+        Requires a v8+ interaction model in the posterior. ``ci`` defaults
+        to ``cfg.ci``.
         """
         p = self.posterior
         if not p.has_interaction:
@@ -1080,7 +1344,7 @@ class BayesEpistemicModel:
                 "RandomSlopesInteractionModel (v8+) to use this plot."
             )
         gamma = p.gamma_sr()
-        assert gamma is not None  # guaranteed by has_interaction guard
+        assert gamma is not None
         labels = p.station_run_labels
         if labels is None:
             labels = [
@@ -1088,17 +1352,39 @@ class BayesEpistemicModel:
                 for s in self.data.station_labels
                 for r in self.data.run_labels
             ]
+        if ci is None:
+            ci = self.cfg.ci
         from .plots.interaction import plot_interaction_forest as _plot
-        return _plot(gamma, labels, **kw)
+        return _plot(
+            gamma, labels, ci=ci, sort=sort, max_cells=max_cells,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_station_posteriors(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    # Posterior .........................................................
+
+    def plot_station_posteriors(
+        self,
+        *,
+        figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "station_posteriors.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot station random-effect posterior densities."""
         p = self.posterior
         from .plots.posterior import plot_station_posteriors as _plot
-        return _plot(p.delta_st(), p.station_labels, **kw)
+        return _plot(
+            p.delta_st(), p.station_labels,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
     def plot_observed_vs_predicted(
-        self, **kw: Any,
+        self,
+        *,
+        figsize: tuple[float, float] = (HALF_WIDTH, HALF_WIDTH),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "observed_vs_predicted.pdf",
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot observed vs. posterior-mean predicted values."""
         p = self.posterior
@@ -1108,28 +1394,77 @@ class BayesEpistemicModel:
             self.data.y, fv["yhat_with_run"].to_numpy(),
             config_idx=self.data.config_idx,
             config_labels=p.config_labels,
-            **kw,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
         )
 
-    def plot_mu_density(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+    def plot_mu_density(
+        self,
+        *,
+        configs: list[str] | None = None,
+        station_idx: int | None = None,
+        run_idx: int | None = None,
+        original_edp_scale: bool = False,
+        kind: Literal["density", "cdf"] = "density",
+        normalize: bool = False,
+        n_cols: int = 4,
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "mu_posterior_density.pdf",
+    ) -> tuple[plt.Figure, np.ndarray]:
         """Plot posterior density of configuration intercepts."""
         p = self.posterior
         from .plots.posterior import plot_mu_density as _plot
-        return _plot(p.mu0(), p.mu_config(), p.config_labels, **kw)
+        return _plot(
+            p.mu0(), p.mu_config(), p.config_labels,
+            configs=configs,
+            delta_st=p.delta_st() if station_idx is not None else None,
+            station_idx=station_idx,
+            b_run=p.b_run() if run_idx is not None else None,
+            run_idx=run_idx,
+            original_edp_scale=original_edp_scale,
+            kind=kind, normalize=normalize, n_cols=n_cols,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_ppc(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_ppc(
+        self,
+        *,
+        figsize: tuple[float, float] | None = None,
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "ppc_check.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot posterior predictive check summary."""
         ppc_df = self.posterior_predictive_check()
         from .plots.posterior import plot_ppc as _plot
-        return _plot(ppc_df, **kw)
+        return _plot(
+            ppc_df, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_residuals(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+    def plot_residuals(
+        self,
+        *,
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "residuals.pdf",
+    ) -> tuple[plt.Figure, np.ndarray]:
         """Plot residual diagnostics."""
         fv = self.fitted_values()
         from .plots.posterior import plot_residuals as _plot
-        return _plot(fv, **kw)
+        return _plot(
+            fv, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_raw_data(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+    def plot_raw_data(
+        self,
+        *,
+        figsize: tuple[float, float] = (FULL_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "raw_data.pdf",
+    ) -> tuple[plt.Figure, np.ndarray]:
         """Plot raw EDP data by configuration and station."""
         from .plots.posterior import plot_raw_data as _plot
         return _plot(
@@ -1138,10 +1473,18 @@ class BayesEpistemicModel:
             list(self.data.config_labels),
             self.data.station_idx,
             list(self.data.station_labels),
-            **kw,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
         )
 
-    def plot_ppc_density(self, **kw: Any) -> tuple[plt.Figure, plt.Axes]:
+    def plot_ppc_density(
+        self,
+        *,
+        n_rep_draws: int = 50,
+        figsize: tuple[float, float] = (HALF_WIDTH, 3.0),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "ppc_density.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
         """Plot posterior predictive density overlay."""
         p = self.posterior
         y_rep = p.y_rep()
@@ -1151,29 +1494,68 @@ class BayesEpistemicModel:
                 "Refit with posterior_predictive=True."
             )
         from .plots.posterior import plot_ppc_density as _plot
-        return _plot(self.data.y, y_rep, **kw)
+        return _plot(
+            self.data.y, y_rep, n_rep_draws=n_rep_draws,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_trace(self, **kw: Any) -> plt.Figure:
+    def plot_trace(
+        self,
+        *,
+        var_names: list[str] | None = None,
+        figsize: tuple[float, float] | None = None,
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "traceplot.pdf",
+    ) -> plt.Figure:
         """Plot ArviZ traceplot for key parameters."""
         from .plots.posterior import plot_trace as _plot
-        return _plot(self.idata, **kw)
+        return _plot(
+            self.idata, var_names=var_names,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_pair(self, **kw: Any) -> plt.Figure:
+    def plot_pair(
+        self,
+        *,
+        var_names: list[str] | None = None,
+        figsize: tuple[float, float] = (HALF_WIDTH, HALF_WIDTH),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "pairplot.pdf",
+    ) -> plt.Figure:
         """Plot ArviZ pair plot for key parameters."""
         from .plots.posterior import plot_pair as _plot
-        return _plot(self.idata, **kw)
+        return _plot(
+            self.idata, var_names=var_names,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
-    def plot_forest_arviz(self, **kw: Any) -> tuple[plt.Figure, np.ndarray]:
+    def plot_forest_arviz(
+        self,
+        *,
+        var_names: list[str] | None = None,
+        ci: float = 0.94,
+        dot_alpha: float = 0.30,
+        figsize: tuple[float, float] | None = None,
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "forest_arviz.pdf",
+    ) -> tuple[plt.Figure, np.ndarray]:
         """Plot ArviZ forest plot with observed data overlay."""
-        from .plots.posterior import plot_forest_arviz as _plot
         d = self.data
-        kw.setdefault("observed_y", d.y)
-        kw.setdefault("config_idx", d.config_idx)
-        kw.setdefault("station_idx", d.station_idx)
-        kw.setdefault("run_idx", d.run_idx)
-        kw.setdefault("config_labels", list(d.config_labels))
-        kw.setdefault("station_labels", list(d.station_labels))
-        return _plot(self.idata, **kw)
+        from .plots.posterior import plot_forest_arviz as _plot
+        return _plot(
+            self.idata, var_names=var_names,
+            observed_y=d.y,
+            config_idx=d.config_idx,
+            station_idx=d.station_idx,
+            run_idx=d.run_idx,
+            config_labels=list(d.config_labels),
+            station_labels=list(d.station_labels),
+            ci=ci, dot_alpha=dot_alpha,
+            figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
+        )
 
     # ── Model comparison ─────────────────────────────────────────────────
 
