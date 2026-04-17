@@ -46,6 +46,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
+    "pandas-stubs",
 ]
 
 [tool.hatch.build.targets.wheel]

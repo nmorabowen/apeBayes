@@ -101,6 +101,7 @@ def _make_idata(
     *,
     sigma_src: np.ndarray,
     sigma_inter: np.ndarray | None = None,
+    gamma_sr: np.ndarray | None = None,
     xi_case: np.ndarray | None = None,
     mu0: np.ndarray | None = None,
     mu_config: np.ndarray | None = None,
@@ -126,6 +127,11 @@ def _make_idata(
     }
     if sigma_inter is not None:
         data_vars["sigma_inter"] = (("chain", "draw"), sigma_inter.reshape(1, S))
+    if gamma_sr is not None:
+        data_vars["gamma_sr"] = (
+            ("chain", "draw", "StationRun"),
+            gamma_sr.reshape(1, S, -1),
+        )
     if xi_case is not None:
         data_vars["xi_case"] = (
             ("chain", "draw", "Case"),
@@ -150,10 +156,17 @@ def _make_idata(
         data_vars["nu_minus2"] = (("chain", "draw"), (nu - 2.0).reshape(1, S))
 
     coords: dict = {"chain": [0], "draw": np.arange(S)}
-    if "Case" in {d for dims, _ in data_vars.values() for d in dims}:  # type: ignore[misc]
+    all_dims = {d for dims, _ in data_vars.values() for d in dims}  # type: ignore[misc]
+    if "Case" in all_dims:
         coords["Case"] = list(case_labels)
-    if "Config" in {d for dims, _ in data_vars.values() for d in dims}:  # type: ignore[misc]
+    if "Config" in all_dims:
         coords["Config"] = list(config_labels)
+    if "StationRun" in all_dims:
+        n_sr = next(
+            arr.shape[2] for dims, arr in data_vars.values()  # type: ignore[misc]
+            if "StationRun" in dims
+        )
+        coords["StationRun"] = [f"sr_{i}" for i in range(n_sr)]
 
     post = xr.Dataset(data_vars, coords=coords)
     return az.InferenceData(posterior=post)
@@ -167,14 +180,16 @@ def stub_dataset(synthetic_long_df, default_config):
 
 @pytest.fixture
 def stub_posterior_v8(stub_dataset):
-    """Lightweight PosteriorAccessor for a v8-shaped model (src + inter).
+    """Lightweight PosteriorAccessor for a v8-shaped model (src + inter + gamma).
 
-    50 draws, no xi_case. Provides deterministic σ_src, σ_inter, σ_eps_config, ν.
+    50 draws, no xi_case. Provides deterministic σ_src, σ_inter, γ_sr, σ_eps_config, ν.
     """
     rng = np.random.default_rng(0)
     S = 50
     sigma_src = np.abs(rng.normal(0.55, 0.05, size=S))
     sigma_inter = np.abs(rng.normal(0.30, 0.04, size=S))
+    # 3 stations × 6 runs = 18 interaction cells (matches the paper suite shape).
+    gamma_sr = rng.normal(0.0, 0.30, size=(S, 18))
     mu0 = rng.normal(-2.0, 0.05, size=S)
     mu_config = rng.normal(0.0, 0.2, size=(S, 16))
     sigma_eps = np.abs(rng.normal(0.10, 0.02, size=(S, 16)))
@@ -182,6 +197,7 @@ def stub_posterior_v8(stub_dataset):
     idata = _make_idata(
         sigma_src=sigma_src,
         sigma_inter=sigma_inter,
+        gamma_sr=gamma_sr,
         mu0=mu0,
         mu_config=mu_config,
         sigma_eps=sigma_eps,
@@ -197,10 +213,12 @@ def stub_posterior_v9(stub_dataset):
     S = 30
     sigma_src = np.abs(rng.normal(0.55, 0.05, size=S))
     sigma_inter = np.abs(rng.normal(0.30, 0.04, size=S))
+    gamma_sr = rng.normal(0.0, 0.30, size=(S, 18))
     xi_case = np.abs(rng.normal(1.0, 0.1, size=(S, 4)))
     idata = _make_idata(
         sigma_src=sigma_src,
         sigma_inter=sigma_inter,
+        gamma_sr=gamma_sr,
         xi_case=xi_case,
     )
     return PosteriorAccessor(idata, stub_dataset)

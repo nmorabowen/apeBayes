@@ -26,6 +26,9 @@ from .diagnostics.convergence import (
 from .diagnostics.validation import posterior_predictive_check
 from .model.comparison import FittedVariant, compare_models
 from .model.flat import FlatConfigModel
+from .model.hierarchical import HierarchicalConfigModel
+from .model.random_slopes import RandomSlopesModel
+from .model.random_slopes_interaction import RandomSlopesInteractionModel
 from .model.sampling import sample_model
 from .posterior.accessor import PosteriorAccessor
 
@@ -41,6 +44,55 @@ def _fmt(a: float) -> str:
     # Strip trailing zeros, keep at least one decimal for floats that look int
     s = f"{a:g}"
     return s
+
+
+def _variant_tag(builder: ModelBuilder) -> str:
+    """Return a short tag describing the variant class.
+
+    Used by :func:`_detect_builder` to compare a user-supplied builder
+    against the variant inferred from the posterior.
+    """
+    if isinstance(builder, RandomSlopesInteractionModel):
+        # pylint: disable=protected-access
+        return "v9" if getattr(builder, "_interaction_loading", False) else "v8"
+    if isinstance(builder, RandomSlopesModel):
+        return "v4-v7"
+    if isinstance(builder, (HierarchicalConfigModel, FlatConfigModel)):
+        return "v1-v3"
+    return type(builder).__name__
+
+
+def _detect_builder(post: PosteriorAccessor) -> tuple[ModelBuilder, str]:
+    """Infer which ModelBuilder produced a posterior from its variable set.
+
+    Returns
+    -------
+    (builder, tag)
+        A default-constructed builder matching the posterior's variant and
+        the variant tag string (``'v9'`` / ``'v8'`` / ``'v4-v7'`` /
+        ``'v1-v3'``).
+
+    Notes
+    -----
+    Probes used (see ``uncertanty_measures.md`` §7 for the σ_GM formula
+    associated with each variant):
+
+    - ``xi_case``     present → v9 RandomSlopesInteractionModel (guard:
+      σ_GM raises NotImplementedError, but we still want to route there
+      so the error is correct rather than silently returning σ_src).
+    - ``gamma_sr``    present → v8 RandomSlopesInteractionModel.
+    - ``lambda_case`` present → v4-v7 RandomSlopesModel.
+    - otherwise                → v1-v3; σ_GM is σ_src either way so we
+      return FlatConfigModel (HierarchicalConfigModel has identical
+      σ_GM, so the dispatch is equivalent).
+    """
+    if post.has_var("xi_case"):
+        return RandomSlopesInteractionModel(interaction_loading=True), "v9"
+    if post.has_var("gamma_sr"):
+        return RandomSlopesInteractionModel(), "v8"
+    if post.has_var("lambda_case"):
+        return RandomSlopesModel(), "v4-v7"
+    return FlatConfigModel(), "v1-v3"
 
 
 class BayesEpistemicModel:
@@ -206,6 +258,15 @@ class BayesEpistemicModel:
     ) -> BayesEpistemicModel:
         """Reload a fitted model from a NetCDF file.
 
+        The ``ModelBuilder`` is auto-detected from the posterior's variable
+        set so σ_GM dispatch routes to the correct variant without user
+        input. Probes:
+
+        - ``xi_case``     present → v9 ``RandomSlopesInteractionModel``
+        - ``gamma_sr``    present → v8 ``RandomSlopesInteractionModel``
+        - ``lambda_case`` present → v4-v7 ``RandomSlopesModel``
+        - otherwise                → v1-v3 ``FlatConfigModel``
+
         Parameters
         ----------
         path : str or Path
@@ -218,22 +279,43 @@ class BayesEpistemicModel:
         name : str, optional
             Human-readable model name.
         builder : ModelBuilder, optional
-            The model variant used to fit the posterior. Needed for
-            correct σ_GM dispatch. Defaults to ``FlatConfigModel()``;
-            pass ``RandomSlopesInteractionModel()`` for v8 posteriors.
+            Override the auto-detected variant. When provided, the class
+            must match what the posterior shape implies; a mismatch raises
+            ``ValueError`` rather than silently returning the wrong σ_GM.
 
         Returns
         -------
         BayesEpistemicModel
             Fully reconstructed fitted model.
+
+        Raises
+        ------
+        ValueError
+            If ``builder`` is supplied and its variant does not match the
+            one detected from the posterior's variables.
         """
         import arviz as az
 
         path = Path(path)
         idata = az.from_netcdf(str(path))
         obj = cls(df, cfg=cfg, name=name)
-        obj._posterior = PosteriorAccessor(idata, obj.data)
-        obj._builder = builder if builder is not None else FlatConfigModel()
+        post = PosteriorAccessor(idata, obj.data)
+        obj._posterior = post
+
+        detected, detected_tag = _detect_builder(post)
+        if builder is None:
+            obj._builder = detected
+        else:
+            user_tag = _variant_tag(builder)
+            if user_tag != detected_tag:
+                raise ValueError(
+                    f"Supplied builder is {user_tag} "
+                    f"({type(builder).__name__}) but the posterior's "
+                    f"variable set implies {detected_tag}. Drop the "
+                    f"builder kwarg to accept the detected variant, "
+                    f"or re-check the NetCDF file."
+                )
+            obj._builder = builder
         return obj
 
     # ── Analysis: bias ───────────────────────────────────────────────────

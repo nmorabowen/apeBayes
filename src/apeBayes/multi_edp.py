@@ -192,7 +192,7 @@ class MultiEDPModel:
             if spec.direction is not None:
                 tbl["direction"] = spec.direction
             frames.append(tbl)
-        return pd.concat(frames, ignore_index=True)
+        return pd.concat(frames, ignore_index=True)  # type: ignore[no-any-return]
 
     def compare_equivalence(
         self,
@@ -217,7 +217,7 @@ class MultiEDPModel:
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
             frames.append(tbl)
-        return pd.concat(frames, ignore_index=True)
+        return pd.concat(frames, ignore_index=True)  # type: ignore[no-any-return]
 
     def compare_decision_report(
         self,
@@ -253,7 +253,7 @@ class MultiEDPModel:
             if spec.direction is not None:
                 tbl["direction"] = spec.direction
             frames.append(tbl)
-        return pd.concat(frames, ignore_index=True)
+        return pd.concat(frames, ignore_index=True)  # type: ignore[no-any-return]
 
     def compare_variance_budget(self) -> pd.DataFrame:
         """Variance budget table across all EDPs."""
@@ -266,7 +266,7 @@ class MultiEDPModel:
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
             frames.append(tbl)
-        return pd.concat(frames, ignore_index=True)
+        return pd.concat(frames, ignore_index=True)  # type: ignore[no-any-return]
 
     def compare_decomposition(
         self,
@@ -282,7 +282,7 @@ class MultiEDPModel:
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
             frames.append(tbl)
-        return pd.concat(frames, ignore_index=True)
+        return pd.concat(frames, ignore_index=True)  # type: ignore[no-any-return]
 
     # ── Summary: the epistemic landscape ────────────────────────────────
 
@@ -307,7 +307,7 @@ class MultiEDPModel:
         equiv_df = self.compare_equivalence(alpha=alpha, ref=ref)
 
         # Merge on (edp, Config)
-        merged = bias_df.merge(
+        merged: pd.DataFrame = bias_df.merge(
             equiv_df[["edp", "Config", "P_equiv"]],
             on=["edp", "Config"],
             how="left",
