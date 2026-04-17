@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from .analysis import bias, decomposition, equivalence, fitted, variance
-from .config import DecisionConfig, ModelConfig
+from .config import ModelConfig
 from .data import EpistemicDataset, encode_dataset
 from .diagnostics.convergence import (
     diagnostics_summary,
@@ -24,7 +24,6 @@ from .diagnostics.convergence import (
     rhat_table,
 )
 from .diagnostics.validation import posterior_predictive_check
-from .model.base import ModelBuilder
 from .model.comparison import FittedVariant, compare_models
 from .model.flat import FlatConfigModel
 from .model.sampling import sample_model
@@ -33,6 +32,8 @@ from .posterior.accessor import PosteriorAccessor
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
     from arviz import InferenceData
+
+    from .model.base import ModelBuilder
 
 
 def _fmt(a: float) -> str:
@@ -371,9 +372,11 @@ class BayesEpistemicModel:
         out = pd.DataFrame({"Config": labels})
 
         # Pre-compute each requested denominator once.
-        denom_arrays: dict[str, np.ndarray] = {
-            d: self._sigma_denom_for(d, ref_idx) for d in denominators
-        }
+        denom_arrays: dict[str, np.ndarray] = {}
+        for d in denominators:
+            if d not in ("src", "gm", "pred"):
+                raise ValueError(f"Unknown denominator {d!r}")
+            denom_arrays[d] = self._sigma_denom_for(d, ref_idx)  # type: ignore[arg-type]
 
         # β summaries per denominator
         for d in denominators:

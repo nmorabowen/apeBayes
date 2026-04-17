@@ -128,7 +128,9 @@ def epistemic_distance_matrix(
     labels: list[str] | None = None,
     subset_idx: np.ndarray | None = None,
 ) -> tuple[list[str], np.ndarray]:
-    """NxN epistemic distance: D_ij = 1 \u2212 P(|\u03bc_i \u2212 \u03bc_j| < \u03b1\u00b7\u03c3_denom).
+    """NxN epistemic distance matrix.
+
+    Computes D_ij = 1 \u2212 P(|\u03bc_i \u2212 \u03bc_j| < \u03b1\u00b7\u03c3_denom).
 
     ``sigma_denom`` must be a 1-D ``(S,)`` array \u2014 pairwise comparisons
     share a single station-level aleatory scale per draw, so there is no

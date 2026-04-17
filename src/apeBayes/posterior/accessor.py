@@ -8,13 +8,15 @@ No more _post() vs _stack_samples_2d() confusion.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ..utils import flatten_posterior, student_t_sd_factor
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from arviz import InferenceData
 
     from ..data import EpistemicDataset
@@ -213,7 +215,7 @@ class PosteriorAccessor:
 
     def sigma_pred(
         self,
-        sigma_gm: np.ndarray | Callable[["PosteriorAccessor"], np.ndarray],
+        sigma_gm: np.ndarray | Callable[[PosteriorAccessor], np.ndarray],
         *,
         ref_idx: int | None = None,
     ) -> np.ndarray:

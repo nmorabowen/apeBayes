@@ -17,7 +17,7 @@ Usage
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -170,7 +170,7 @@ class MultiEDPModel:
         ref: str | None = None,
         configs: list[str] | None = None,
         *,
-        denominator: str = "gm",
+        denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
         """Standardised bias table across all EDPs.
 
@@ -200,7 +200,7 @@ class MultiEDPModel:
         alpha: float | None = None,
         ref: str | None = None,
         configs: list[str] | None = None,
-        denominator: str = "gm",
+        denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
         """Equivalence probability table across all EDPs.
 
@@ -229,12 +229,12 @@ class MultiEDPModel:
         alpha_ladder: tuple[float, ...] | None = None,
         p_star: float | None = None,
     ) -> pd.DataFrame:
-        """Headline decision report across all EDPs (\u00a73.1 of integration plan).
+        """Headline decision report across all EDPs (§3.1 of integration plan).
 
         Concatenates each EDP's :meth:`BayesEpistemicModel.decision_report`
         output with ``edp``, ``category`` (and ``story`` / ``direction``
         when set on the EDPSpec) prepended. This is the primary Stage-1
-        deliverable: the \u03b2 field across EDP \xd7 config with decisions
+        deliverable: the β field across EDP × config with decisions
         already attached.
         """
         self._check_fitted()

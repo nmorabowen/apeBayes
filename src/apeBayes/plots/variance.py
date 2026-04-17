@@ -571,7 +571,7 @@ def plot_level_rankings(
 
 def plot_sigma_stability_triptych(
     sigma_eps: np.ndarray,
-    sigma_src: np.ndarray,  # noqa: ARG001 — kept for positional compatibility with facade dispatcher
+    sigma_src: np.ndarray,  # unused; kept for positional compat with facade
     labels: list[str],
     ref_idx: int,
     ci: tuple[float, float] = (0.05, 0.95),
