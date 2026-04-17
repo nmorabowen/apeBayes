@@ -132,6 +132,7 @@ class MultiEDPModel:
             config_sep=self.cfg.config_sep,
             priors=self.cfg.priors,
             sampling=self.cfg.sampling,
+            decision=self.cfg.decision,
         )
 
     def fit(self, edp_name: str, **fit_kwargs: Any) -> BayesEpistemicModel:
@@ -168,16 +169,21 @@ class MultiEDPModel:
         self,
         ref: str | None = None,
         configs: list[str] | None = None,
+        *,
+        denominator: str = "gm",
     ) -> pd.DataFrame:
-        """Standardized bias table across all EDPs.
+        """Standardised bias table across all EDPs.
 
         Returns a long DataFrame with an extra 'edp' column.
+        Canonical denominator is \u03c3_GM; pass ``denominator='src'`` or
+        ``'pred'`` for sensitivity views.
         """
         self._check_fitted()
         frames = []
         for spec in self.edp_specs:
             m = self.models[spec.name]
-            tbl = m.standardized_bias_table(ref=ref, configs=configs)
+            tbl = m.standardized_bias_table(ref=ref, configs=configs,
+                                            denominator=denominator)
             tbl = tbl.copy()
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
@@ -188,39 +194,64 @@ class MultiEDPModel:
             frames.append(tbl)
         return pd.concat(frames, ignore_index=True)
 
-    def compare_bias_total(
+    def compare_equivalence(
         self,
+        *,
+        alpha: float | None = None,
         ref: str | None = None,
         configs: list[str] | None = None,
+        denominator: str = "gm",
     ) -> pd.DataFrame:
-        """Standardized bias (total) table across all EDPs."""
+        """Equivalence probability table across all EDPs.
+
+        ``alpha`` defaults to ``cfg.decision.alpha_eq`` (paper default 0.4).
+        """
         self._check_fitted()
         frames = []
         for spec in self.edp_specs:
             m = self.models[spec.name]
-            tbl = m.standardized_bias_total_table(ref=ref, configs=configs)
+            tbl = m.equivalence_probability_table(
+                alpha=alpha, ref=ref, configs=configs, denominator=denominator,
+            )
             tbl = tbl.copy()
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
             frames.append(tbl)
         return pd.concat(frames, ignore_index=True)
 
-    def compare_equivalence(
+    def compare_decision_report(
         self,
         *,
-        alpha: float = 0.5,
         ref: str | None = None,
         configs: list[str] | None = None,
+        denominators: tuple[str, ...] | None = None,
+        alpha_eq: float | None = None,
+        alpha_ladder: tuple[float, ...] | None = None,
+        p_star: float | None = None,
     ) -> pd.DataFrame:
-        """Equivalence probability table across all EDPs."""
+        """Headline decision report across all EDPs (\u00a73.1 of integration plan).
+
+        Concatenates each EDP's :meth:`BayesEpistemicModel.decision_report`
+        output with ``edp``, ``category`` (and ``story`` / ``direction``
+        when set on the EDPSpec) prepended. This is the primary Stage-1
+        deliverable: the \u03b2 field across EDP \xd7 config with decisions
+        already attached.
+        """
         self._check_fitted()
         frames = []
         for spec in self.edp_specs:
             m = self.models[spec.name]
-            tbl = m.equivalence_probability_table(alpha=alpha, ref=ref, configs=configs)
+            tbl = m.decision_report(
+                ref=ref, configs=configs, denominators=denominators,
+                alpha_eq=alpha_eq, alpha_ladder=alpha_ladder, p_star=p_star,
+            )
             tbl = tbl.copy()
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
+            if spec.story is not None:
+                tbl["story"] = spec.story
+            if spec.direction is not None:
+                tbl["direction"] = spec.direction
             frames.append(tbl)
         return pd.concat(frames, ignore_index=True)
 
@@ -258,15 +289,20 @@ class MultiEDPModel:
     def epistemic_landscape(
         self,
         *,
-        alpha: float = 0.5,
+        alpha: float | None = None,
         ref: str | None = None,
     ) -> pd.DataFrame:
         """One-row-per-(EDP, config) summary combining bias + equivalence.
 
+        ``alpha`` defaults to ``cfg.decision.alpha_eq`` (paper default 0.4).
+
         This is the key Stage 1 deliverable: the field β(EDP, config)
         that reveals *where in the structure* modeling fidelity matters.
+        Both tables use σ_GM as denominator.
         """
         self._check_fitted()
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
         bias_df = self.compare_bias(ref=ref)
         equiv_df = self.compare_equivalence(alpha=alpha, ref=ref)
 
