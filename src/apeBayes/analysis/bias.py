@@ -3,6 +3,11 @@ Standardized bias analysis.
 
 All functions are stateless: they take posterior draws (numpy arrays)
 and metadata, and return pandas DataFrames.
+
+The denominator is provided explicitly by the caller (``sigma_denom``),
+so the same routine computes β_src, β_GM (canonical), or β_pred depending
+on which aleatory SD is passed in. See ``uncertanty_measures.md`` §4 for
+the three denominators and §7 for per-variant σ_GM.
 """
 
 from __future__ import annotations
@@ -12,50 +17,70 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from ..utils import student_t_sd_factor
-
 
 def standardized_bias(
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     ref_idx: int,
     labels: list[str],
     ci: tuple[float, float] = (0.05, 0.95),
     *,
     subset_idx: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Standardized epistemic bias relative to a reference configuration.
+    r"""Standardised epistemic bias ``β = Δμ / σ_denom`` per posterior draw.
 
-    Computes per posterior draw:
-        Δμ_k  = mu_config[:, k] − mu_config[:, ref]
-        β_k   = Δμ_k / σ_run
-        ratio = exp(Δμ_k)                              (multiplicative factor)
+    Computes, for each draw :math:`s`:
+
+    .. math::
+        \Delta\mu_k^{(s)} = \mu_k^{(s)} - \mu_{\text{ref}}^{(s)},
+        \qquad
+        \beta_k^{(s)} = \Delta\mu_k^{(s)} / \sigma_{\text{denom}}^{(s)}.
+
+    The caller chooses ``sigma_denom`` to produce β_src, β_GM (canonical),
+    or β_pred. See ``uncertanty_measures.md`` §4.
 
     Parameters
     ----------
     mu_config : (S, K) array
         Posterior draws of configuration effects.
-    sigma_run : (S,) array
-        Posterior draws of run-level SD.
+    sigma_denom : (S,) or (S, K) array
+        Posterior draws of the denominator SD. ``(S,)`` for per-draw scalar
+        denominators (σ_src, σ_GM); ``(S, K)`` for per-configuration
+        denominators (σ_pred when the residual is heteroskedastic).
     ref_idx : int
         Index of the reference configuration.
     labels : list[str]
-        Configuration labels (length K or len(subset_idx)).
+        Configuration labels (length K or ``len(subset_idx)``).
     ci : tuple
-        Credible interval quantiles.
+        Credible-interval quantiles.
     subset_idx : (M,) int array, optional
-        If given, only compute for these configuration indices.
+        If given, restrict output to these configuration indices.
 
     Returns
     -------
     pd.DataFrame
-        Columns: Config, std_bias_{med,lo,hi}, dmu_{med,lo,hi}, mult_{med,lo,hi}.
+        Columns: ``Config, std_bias_{med,lo,hi}, dmu_{med,lo,hi},
+        mult_{med,lo,hi}``. Rows ordered by ``labels``.
     """
     mu_sub = mu_config[:, subset_idx] if subset_idx is not None else mu_config
+    dmu = mu_sub - mu_config[:, [ref_idx]]  # (S, M)
 
-    dmu = mu_sub - mu_config[:, [ref_idx]]         # (S, M)
-    beta = dmu / sigma_run[:, None]                 # (S, M)
-    mult = np.exp(dmu)                              # (S, M)
+    if sigma_denom.ndim == 1:
+        beta = dmu / sigma_denom[:, None]
+    elif sigma_denom.ndim == 2:
+        denom = sigma_denom[:, subset_idx] if subset_idx is not None else sigma_denom
+        if denom.shape != dmu.shape:
+            raise ValueError(
+                f"sigma_denom shape {denom.shape} incompatible with mu_config "
+                f"subset shape {dmu.shape}"
+            )
+        beta = dmu / denom
+    else:
+        raise ValueError(
+            f"sigma_denom must be 1-D (S,) or 2-D (S, K), got shape {sigma_denom.shape}"
+        )
+
+    mult = np.exp(dmu)
 
     ci_lo, ci_hi = ci
     return pd.DataFrame({
@@ -72,88 +97,46 @@ def standardized_bias(
     })
 
 
-def standardized_bias_total(
-    mu_config: np.ndarray,
-    sigma_run: np.ndarray,
-    sigma_eps: np.ndarray,
-    ref_idx: int,
-    labels: list[str],
-    ci: tuple[float, float] = (0.05, 0.95),
-    *,
-    nu: np.ndarray | None = None,
-    subset_idx: np.ndarray | None = None,
-) -> pd.DataFrame:
-    """Bias standardized by *total* predictive SD (run + residual).
-
-    σ_tot_k = √(σ_run² + σ_eps_eff_k²)
-    β_tot_k = Δμ_k / σ_tot_k
-
-    Parameters
-    ----------
-    sigma_eps : (S,) or (S, K) array
-        Residual SD — scalar (homo) or per-config (hetero).
-    nu : (S,) array, optional
-        Student-t degrees of freedom for variance adjustment.
-    """
-    if subset_idx is not None:
-        mu_sub = mu_config[:, subset_idx]
-        if sigma_eps.ndim == 2:
-            sig_eps_sub = sigma_eps[:, subset_idx]
-        else:
-            sig_eps_sub = sigma_eps[:, None] * np.ones((mu_sub.shape[0], mu_sub.shape[1]))
-    else:
-        mu_sub = mu_config
-        if sigma_eps.ndim == 1:
-            sig_eps_sub = sigma_eps[:, None] * np.ones((mu_sub.shape[0], mu_sub.shape[1]))
-        else:
-            sig_eps_sub = sigma_eps
-
-    # Student-t SD adjustment
-    if nu is not None:
-        sig_eps_sub = sig_eps_sub * student_t_sd_factor(nu)[:, None]
-
-    dmu = mu_sub - mu_config[:, [ref_idx]]
-    sigma_tot = np.sqrt(sigma_run[:, None] ** 2 + sig_eps_sub ** 2)
-    beta_tot = dmu / sigma_tot
-
-    ci_lo, ci_hi = ci
-    return pd.DataFrame({
-        "Config": labels,
-        "beta_tot_med": np.median(beta_tot, axis=0),
-        "beta_tot_lo": np.quantile(beta_tot, ci_lo, axis=0),
-        "beta_tot_hi": np.quantile(beta_tot, ci_hi, axis=0),
-        "sigma_tot_med": np.median(sigma_tot, axis=0),
-        "sigma_tot_lo": np.quantile(sigma_tot, ci_lo, axis=0),
-        "sigma_tot_hi": np.quantile(sigma_tot, ci_hi, axis=0),
-        "dmu_med": np.median(dmu, axis=0),
-        "dmu_lo": np.quantile(dmu, ci_lo, axis=0),
-        "dmu_hi": np.quantile(dmu, ci_hi, axis=0),
-    })
-
-
 def bias_probability(
     mu_config: np.ndarray,
-    sigma_run: np.ndarray,
+    sigma_denom: np.ndarray,
     ref_idx: int,
     labels: list[str],
     *,
-    mode: Literal["exceed_band", "within_equiv", "positive"] = "exceed_band",
-    band: float = 1.0,
-    alpha_equiv: float = 0.5,
+    mode: Literal["exceed_band", "within_equiv", "positive"] = "within_equiv",
+    band: float = 1.1,
+    alpha_equiv: float = 0.4,
     subset_idx: np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Probability summaries of β = Δμ / σ_run.
+    """Probability summaries of β = Δμ / σ_denom.
+
+    Defaults match the spec (``uncertanty_measures.md`` §5–§6):
+    ``alpha_equiv=0.4`` is the paper-level α_eq; ``band=1.1`` is the top
+    rung of the α ladder (severely biased).
 
     Modes
     -----
-    - "exceed_band"  : P(|β| > band)
-    - "within_equiv" : P(|β| < alpha_equiv)
-    - "positive"     : P(β > 0)
+    - ``"exceed_band"``  : P(|β| > band)
+    - ``"within_equiv"`` : P(|β| < alpha_equiv) — the spec's P_eq
+    - ``"positive"``     : P(β > 0)
     """
     mu_sub = mu_config[:, subset_idx] if subset_idx is not None else mu_config
-
     dmu = mu_sub - mu_config[:, [ref_idx]]
-    beta = dmu / sigma_run[:, None]
+
+    if sigma_denom.ndim == 1:
+        beta = dmu / sigma_denom[:, None]
+    elif sigma_denom.ndim == 2:
+        denom = sigma_denom[:, subset_idx] if subset_idx is not None else sigma_denom
+        if denom.shape != dmu.shape:
+            raise ValueError(
+                f"sigma_denom shape {denom.shape} incompatible with mu_config "
+                f"subset shape {dmu.shape}"
+            )
+        beta = dmu / denom
+    else:
+        raise ValueError(
+            f"sigma_denom must be 1-D (S,) or 2-D (S, K), got shape {sigma_denom.shape}"
+        )
 
     if mode == "exceed_band":
         p = np.mean(np.abs(beta) > band, axis=0)
