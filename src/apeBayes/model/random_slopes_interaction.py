@@ -54,6 +54,7 @@ from .random_slopes import RandomSlopesModel
 if TYPE_CHECKING:
     from ..config import ModelConfig
     from ..data import EpistemicDataset
+    from ..posterior import PosteriorAccessor
 
 
 class RandomSlopesInteractionModel(RandomSlopesModel):
@@ -108,6 +109,34 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
             tag += f", ξ_loading=True, σ_ξ={self._sigma_xi}"
         tag += ", "
         return base.replace("RandomSlopes(", tag)
+
+    def sigma_GM(self, post: PosteriorAccessor) -> np.ndarray:
+        """σ_GM = √(σ_src² + σ_inter²) for v8 random-slopes + interaction.
+
+        Station×rupture interaction is an independent aleatory layer at
+        this tier, so it enters the single-station aleatory SD alongside
+        the source variability. See ``uncertanty_measures.md`` §7 (v8).
+
+        Raises
+        ------
+        NotImplementedError
+            When the posterior carries the v9 ``xi_case`` per-Case
+            interaction loading. The σ_GM formula for a configuration-
+            dependent interaction scale has not been derived; this guard
+            prevents silently reusing the v8 formula.
+        """
+        if post.has_interaction_loading:
+            raise NotImplementedError(
+                "v9 \u03c3_GM not yet derived; see uncertanty_measures.md \u00a77"
+            )
+        sigma_src = post.sigma_src()
+        sigma_inter = post.sigma_inter()
+        if sigma_inter is None:
+            raise ValueError(
+                "RandomSlopesInteractionModel.sigma_GM requires sigma_inter in the "
+                "posterior, but it is missing."
+            )
+        return np.sqrt(sigma_src ** 2 + sigma_inter ** 2)
 
     def build(
         self,

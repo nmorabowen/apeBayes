@@ -24,8 +24,11 @@ from typing import TYPE_CHECKING
 import pymc as pm
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from ..config import ModelConfig
     from ..data import EpistemicDataset
+    from ..posterior import PosteriorAccessor
 
 
 class HierarchicalConfigModel:
@@ -59,6 +62,15 @@ class HierarchicalConfigModel:
         if het is not None:
             parts.append("hetero" if het else "homo")
         return f"Hierarchical({', '.join(parts)})" if parts else "Hierarchical(default)"
+
+    def sigma_GM(self, post: PosteriorAccessor) -> np.ndarray:
+        """σ_GM = σ_src for hierarchical-configuration models.
+
+        Same aleatory decomposition as FlatConfigModel — τ_config is a
+        learned prior scale on μ_config, not an aleatory component. See
+        ``uncertanty_measures.md`` §7.
+        """
+        return post.sigma_src()
 
     def build(
         self,
