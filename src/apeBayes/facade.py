@@ -8,8 +8,9 @@ independently usable.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -45,6 +46,12 @@ def _fmt(a: float) -> str:
     # Strip trailing zeros, keep at least one decimal for floats that look int
     s = f"{a:g}"
     return s
+
+
+# The 32 plot methods return some mix of plt.Figure, (Figure, Axes),
+# (Figure, ndarray), etc. ``_stamp`` is generic over that return shape
+# so wrapping a plot call preserves the precise type for mypy callers.
+_R = TypeVar("_R")
 
 
 def _variant_tag(builder: ModelBuilder) -> str:
@@ -123,6 +130,11 @@ class BayesEpistemicModel:
         self._posterior: PosteriorAccessor | None = None
         self._builder: ModelBuilder | None = None
         self._sigma_gm_cache: np.ndarray | None = None
+        # Plot behaviour: when self.name is set, every plot method stamps
+        # a bottom-right "name: {self.name}" watermark on the figure so
+        # printed/shared figures self-identify which model produced them.
+        # Set to False to suppress globally for this model instance.
+        self.show_model_name_on_plots: bool = True
 
     def fit(
         self,
@@ -992,6 +1004,40 @@ class BayesEpistemicModel:
     # names) are computed by the facade and not surfaced. No **kwargs
     # escape hatch — IDE autocomplete and the type checker see the real
     # parameter surface.
+    #
+    # Every plot return is threaded through ``self._stamp`` which, when
+    # ``self.name`` is set and ``self.show_model_name_on_plots`` is True,
+    # adds a small ``"name: <self.name>"`` watermark at the bottom-right
+    # of the figure. This makes printed/shared plots self-identify the
+    # model that produced them without touching titles or layout.
+
+    def _stamp(self, result: _R) -> _R:
+        """Annotate the figure in ``result`` with ``self.name``; return unchanged.
+
+        ``result`` is either a bare ``plt.Figure`` or a tuple whose first
+        element is a figure. The stamp is a no-op when ``self.name`` is
+        None or ``self.show_model_name_on_plots`` is False — so callers
+        can use this unconditionally.
+
+        Generic over the result shape so wrapping a plot call preserves
+        the precise return type for the caller (e.g., a
+        ``tuple[plt.Figure, plt.Axes]`` stays that exact type).
+        """
+        if not self.name or not self.show_model_name_on_plots:
+            return result
+        # Treat fig as Any for the annotation call — the generic _R
+        # makes mypy lose sight of the matplotlib Figure attributes.
+        fig: Any = result[0] if isinstance(result, tuple) else result
+        # A plot backend that lacks fig.text (vanishingly unlikely, but
+        # e.g. a mocked Figure in tests) shouldn't break the plot.
+        with contextlib.suppress(Exception):
+            fig.text(
+                0.99, 0.01, f"name: {self.name}",
+                ha="right", va="bottom",
+                fontsize=6.5, color="0.35", alpha=0.7,
+                transform=fig.transFigure,
+            )
+        return result
 
     # Diagnostics ........................................................
 
@@ -1007,11 +1053,11 @@ class BayesEpistemicModel:
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot R-hat convergence bar chart."""
         from .plots.diagnostics import plot_rhat_bar as _plot
-        return _plot(
+        return self._stamp(_plot(
             self.rhat_table(),
             top_n=top_n, threshold=threshold,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_ess_bar(
         self,
@@ -1048,11 +1094,11 @@ class BayesEpistemicModel:
             default ``f"ess_{kind}_bar.pdf"``.
         """
         from .plots.diagnostics import plot_ess_bar as _plot
-        return _plot(
+        return self._stamp(_plot(
             self.ess_table(),
             kind=kind, top_n=top_n, threshold=threshold,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     # Bias .............................................................
 
@@ -1103,12 +1149,12 @@ class BayesEpistemicModel:
         mu_hat = self.mu_hat_table()
         bias_df = self.standardized_bias_table()
         from .plots.bias import plot_mu_triptych as _plot
-        return _plot(
+        return self._stamp(_plot(
             mu_hat, bias_df,
             ref=ref, original_edp_scale=original_edp_scale,
             annot=annot, fmt_mu=fmt_mu, fmt_dmu=fmt_dmu, fmt_ratio=fmt_ratio,
             cmap=cmap, figsize=figsize, out_dir=out_dir, prefix=prefix,
-        )
+        ))
 
     def plot_standardized_bias(
         self,
@@ -1198,7 +1244,7 @@ class BayesEpistemicModel:
                 raw_dots[k, col] = (float(d.y[i]) - ref_val) / denom_med
         raw_means = np.nanmean(raw_dots, axis=1)
 
-        return _plot(
+        return self._stamp(_plot(
             bias_df,
             beta_draws=beta_draws, beta_labels=beta_labels,
             raw_dots=raw_dots, raw_means=raw_means, raw_labels=beta_labels,
@@ -1208,7 +1254,7 @@ class BayesEpistemicModel:
             alpha_eq=self.cfg.decision.alpha_eq,
             dot_alpha=dot_alpha, posterior_style=posterior_style,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_radar_bias_probability(
         self,
@@ -1228,11 +1274,11 @@ class BayesEpistemicModel:
             alpha = self.cfg.decision.alpha_eq
         equiv_df = self.equivalence_probability_table(alpha=alpha)
         from .plots.bias import plot_radar_bias_probability as _plot
-        return _plot(
+        return self._stamp(_plot(
             equiv_df, alpha=alpha, ref=self.data.ref_label,
             fill_alpha=fill_alpha,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_bias_ridgeplot(
         self,
@@ -1295,13 +1341,13 @@ class BayesEpistemicModel:
                 station_idx=self.data.station_idx,
                 station_labels=list(self.data.station_labels),
             )
-        return _plot(
+        return self._stamp(_plot(
             p.mu_config(), sigma_denom,
             p.config_labels, p.ref_idx,
             denom_name=denom_name, overlap=overlap, bw_adjust=bw_adjust,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
             **extra,
-        )
+        ))
 
     def plot_bias_probability(
         self,
@@ -1361,12 +1407,12 @@ class BayesEpistemicModel:
             ref=ref, configs=configs, denominator=denominator,
         )
         from .plots.bias import plot_bias_probability as _plot
-        return _plot(
+        return self._stamp(_plot(
             prob_df,
             prob_col="prob", label_col="Config",
             threshold_label=threshold_label,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     # Variance ..........................................................
 
@@ -1381,9 +1427,9 @@ class BayesEpistemicModel:
         """Plot variance-budget bar chart."""
         vb = self.variance_budget_table()
         from .plots.variance import plot_variance_budget_bars as _plot
-        return _plot(
+        return self._stamp(_plot(
             vb, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_variance_budget_waterfall(
         self,
@@ -1396,9 +1442,9 @@ class BayesEpistemicModel:
         """Plot variance-budget waterfall chart."""
         vb = self.variance_budget_table()
         from .plots.variance import plot_variance_budget_waterfall as _plot
-        return _plot(
+        return self._stamp(_plot(
             vb, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_decomposition_bars(
         self,
@@ -1411,9 +1457,9 @@ class BayesEpistemicModel:
         """Plot axis-wise decomposition bar chart."""
         decomp = self.axiswise_decomposition_table()
         from .plots.variance import plot_decomposition_bars as _plot
-        return _plot(
+        return self._stamp(_plot(
             decomp, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_sigma_stability(
         self,
@@ -1427,10 +1473,10 @@ class BayesEpistemicModel:
         vc = self.variance_component_table()
         sigma_src_med = float(np.median(self.posterior.sigma_src()))
         from .plots.variance import plot_sigma_stability as _plot
-        return _plot(
+        return self._stamp(_plot(
             vc, sigma_src_med=sigma_src_med,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_variance_ratio(
         self,
@@ -1443,11 +1489,11 @@ class BayesEpistemicModel:
         """Plot variance-ratio forest across configurations."""
         p = self.posterior
         from .plots.variance import plot_variance_ratio as _plot
-        return _plot(
+        return self._stamp(_plot(
             p.sigma_src(), p.sigma_eps(),
             p.config_labels, ci=self.cfg.ci, nu=p.nu(),
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_level_rankings(
         self,
@@ -1461,10 +1507,10 @@ class BayesEpistemicModel:
         tier_tbl, case_tbl, _ = self.level_ranking_tables()
         factor_names = (self.cfg.factors[0].name, self.cfg.factors[1].name)
         from .plots.variance import plot_level_rankings as _plot
-        return _plot(
+        return self._stamp(_plot(
             tier_tbl, case_tbl, factor_names=factor_names,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_sigma_stability_triptych(
         self,
@@ -1500,12 +1546,12 @@ class BayesEpistemicModel:
         """
         p = self.posterior
         from .plots.variance import plot_sigma_stability_triptych as _plot
-        return _plot(
+        return self._stamp(_plot(
             p.sigma_eps(), p.sigma_src(), p.config_labels, p.ref_idx,
             ci=self.cfg.ci, nu=p.nu(),
             order_by=order_by,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     # Equivalence .......................................................
 
@@ -1526,11 +1572,11 @@ class BayesEpistemicModel:
             alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_matrix as _plot
-        return _plot(
+        return self._stamp(_plot(
             labels, P_mat, alpha=alpha,
             annot=annot, fmt=fmt, cmap=cmap,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_equivalence_matrix_with_dendrogram(
         self,
@@ -1580,12 +1626,12 @@ class BayesEpistemicModel:
         from .plots.equivalence import (
             plot_equivalence_matrix_with_dendrogram as _plot,
         )
-        return _plot(
+        return self._stamp(_plot(
             labels, P_mat, alpha=alpha,
             method=method, cluster_order=cluster_order,
             annot=annot, fmt=fmt, cmap=cmap,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_equivalence_dendrogram(
         self,
@@ -1616,10 +1662,10 @@ class BayesEpistemicModel:
             alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
         from .plots.equivalence import plot_equivalence_dendrogram as _plot
-        return _plot(
+        return self._stamp(_plot(
             labels, P_mat, alpha=alpha, method=method,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_equivalence_sweep(
         self,
@@ -1632,9 +1678,9 @@ class BayesEpistemicModel:
         """Plot equivalence probability sweep across alpha values."""
         sweep = self.equivalence_sweep_table()
         from .plots.equivalence import plot_equivalence_sweep as _plot
-        return _plot(
+        return self._stamp(_plot(
             sweep, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_equivalence_bars_plus_sweep(
         self,
@@ -1654,10 +1700,10 @@ class BayesEpistemicModel:
         from .plots.equivalence import (
             plot_equivalence_bars_plus_sweep as _plot,
         )
-        return _plot(
+        return self._stamp(_plot(
             equiv, sweep, alpha=alpha,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     # Interaction (v8+, v9+) ............................................
 
@@ -1683,13 +1729,13 @@ class BayesEpistemicModel:
         gamma = p.gamma_sr()
         assert gamma is not None
         from .plots.interaction import plot_interaction_heatmap as _plot
-        return _plot(
+        return self._stamp(_plot(
             gamma,
             list(self.data.station_labels),
             list(self.data.run_labels),
             annotate=annotate,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_interaction_by_case(
         self,
@@ -1721,7 +1767,7 @@ class BayesEpistemicModel:
                 self.cfg.factors[1].name
             ])
         from .plots.interaction import plot_interaction_by_case as _plot
-        return _plot(
+        return self._stamp(_plot(
             gamma,
             case_labels,
             list(self.data.station_labels),
@@ -1729,7 +1775,7 @@ class BayesEpistemicModel:
             xi_case_draws=p.xi_case(),
             annotate=annotate, share_scale=share_scale, ncols=ncols,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_interaction_forest(
         self,
@@ -1765,10 +1811,10 @@ class BayesEpistemicModel:
         if ci is None:
             ci = self.cfg.ci
         from .plots.interaction import plot_interaction_forest as _plot
-        return _plot(
+        return self._stamp(_plot(
             gamma, labels, ci=ci, sort=sort, max_cells=max_cells,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     # Posterior .........................................................
 
@@ -1783,10 +1829,10 @@ class BayesEpistemicModel:
         """Plot station random-effect posterior densities."""
         p = self.posterior
         from .plots.posterior import plot_station_posteriors as _plot
-        return _plot(
+        return self._stamp(_plot(
             p.delta_st(), p.station_labels,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_observed_vs_predicted(
         self,
@@ -1800,12 +1846,12 @@ class BayesEpistemicModel:
         p = self.posterior
         fv = self.fitted_values()
         from .plots.posterior import plot_observed_vs_predicted as _plot
-        return _plot(
+        return self._stamp(_plot(
             self.data.y, fv["yhat_with_run"].to_numpy(),
             config_idx=self.data.config_idx,
             config_labels=p.config_labels,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_mu_density(
         self,
@@ -1860,7 +1906,7 @@ class BayesEpistemicModel:
         """
         p = self.posterior
         from .plots.posterior import plot_mu_density as _plot
-        return _plot(
+        return self._stamp(_plot(
             p.mu0(), p.mu_config(), p.config_labels,
             configs=configs,
             delta_st=p.delta_st() if station_idx is not None else None,
@@ -1870,7 +1916,7 @@ class BayesEpistemicModel:
             original_edp_scale=original_edp_scale,
             kind=kind, normalize=normalize, n_cols=n_cols,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_ppc(
         self,
@@ -1883,9 +1929,9 @@ class BayesEpistemicModel:
         """Plot posterior predictive check summary."""
         ppc_df = self.posterior_predictive_check()
         from .plots.posterior import plot_ppc as _plot
-        return _plot(
+        return self._stamp(_plot(
             ppc_df, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_residuals(
         self,
@@ -1898,9 +1944,9 @@ class BayesEpistemicModel:
         """Plot residual diagnostics."""
         fv = self.fitted_values()
         from .plots.posterior import plot_residuals as _plot
-        return _plot(
+        return self._stamp(_plot(
             fv, figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_raw_data(
         self,
@@ -1912,14 +1958,14 @@ class BayesEpistemicModel:
     ) -> tuple[plt.Figure, np.ndarray]:
         """Plot raw EDP data by configuration and station."""
         from .plots.posterior import plot_raw_data as _plot
-        return _plot(
+        return self._stamp(_plot(
             self.data.y,
             self.data.config_idx,
             list(self.data.config_labels),
             self.data.station_idx,
             list(self.data.station_labels),
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_ppc_density(
         self,
@@ -1939,10 +1985,10 @@ class BayesEpistemicModel:
                 "Refit with posterior_predictive=True."
             )
         from .plots.posterior import plot_ppc_density as _plot
-        return _plot(
+        return self._stamp(_plot(
             self.data.y, y_rep, n_rep_draws=n_rep_draws,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_trace(
         self,
@@ -1955,10 +2001,10 @@ class BayesEpistemicModel:
     ) -> plt.Figure:
         """Plot ArviZ traceplot for key parameters."""
         from .plots.posterior import plot_trace as _plot
-        return _plot(
+        return self._stamp(_plot(
             self.idata, var_names=var_names,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_pair(
         self,
@@ -1971,10 +2017,10 @@ class BayesEpistemicModel:
     ) -> plt.Figure:
         """Plot ArviZ pair plot for key parameters."""
         from .plots.posterior import plot_pair as _plot
-        return _plot(
+        return self._stamp(_plot(
             self.idata, var_names=var_names,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     def plot_forest_arviz(
         self,
@@ -1990,7 +2036,7 @@ class BayesEpistemicModel:
         """Plot ArviZ forest plot with observed data overlay."""
         d = self.data
         from .plots.posterior import plot_forest_arviz as _plot
-        return _plot(
+        return self._stamp(_plot(
             self.idata, var_names=var_names,
             observed_y=d.y,
             config_idx=d.config_idx,
@@ -2000,7 +2046,7 @@ class BayesEpistemicModel:
             station_labels=list(d.station_labels),
             ci=ci, dot_alpha=dot_alpha,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
-        )
+        ))
 
     # ── Model comparison ─────────────────────────────────────────────────
 
