@@ -362,6 +362,8 @@ def plot_standardized_bias(
     col_lo: str = "std_bias_lo",
     col_hi: str = "std_bias_hi",
     ref_label: str | None = None,
+    denom_name: str = "GM",
+    alpha_eq: float = 0.4,
     dot_alpha: float = 0.28,
     posterior_style: str = "violin",
     figsize: tuple[float, float] | None = None,
@@ -416,7 +418,8 @@ def plot_standardized_bias(
                              beta_draws=beta_draws, beta_labels=beta_labels,
                              raw_dots=raw_dots, raw_means=raw_means,
                              raw_labels=raw_labels, dot_alpha=dot_alpha,
-                             posterior_style=posterior_style)
+                             posterior_style=posterior_style,
+                             denom_name=denom_name, alpha_eq=alpha_eq)
             axes[idx].set_title(str(sta))
             if idx > 0:
                 axes[idx].set_ylabel("")
@@ -432,7 +435,8 @@ def plot_standardized_bias(
                          beta_draws=beta_draws, beta_labels=beta_labels,
                          raw_dots=raw_dots, raw_means=raw_means,
                          raw_labels=raw_labels, dot_alpha=dot_alpha,
-                         posterior_style=posterior_style)
+                         posterior_style=posterior_style,
+                         denom_name=denom_name, alpha_eq=alpha_eq)
         axes = np.array([ax])
 
     if ref_label is not None:
@@ -463,11 +467,13 @@ def _draw_bias_panel(
     raw_labels: list[str] | None = None,
     dot_alpha: float = 0.28,
     posterior_style: str = "violin",
+    denom_name: str = "GM",
+    alpha_eq: float = 0.4,
 ) -> None:
     """Draw one bias panel with layered elements.
 
     Layers (back to front):
-      0  Grey aleatory band |beta| < 1 with ±1 dashed lines
+      0  Grey equivalence band |β| < α_eq with ±1 aleatory reference lines
       1  Posterior density (violin, ridge, or none)
       2  Raw per-runkey dots (steel, semi-transparent)
       3  Raw TierCase-mean X markers (amber)
@@ -485,9 +491,9 @@ def _draw_bias_panel(
     lo = df_ord[col_lo].to_numpy(dtype=float)
     hi = df_ord[col_hi].to_numpy(dtype=float)
 
-    # Layer 0: aleatory band |beta| < 1 with dashed boundary lines
-    ax.axvspan(-1.0, 1.0, color="grey", alpha=0.10, zorder=0,
-               label=r"$|\beta| < 1$ (within aleatory variability)")
+    # Layer 0: α_eq equivalence band; ±1 dashed lines kept as aleatory reference
+    ax.axvspan(-alpha_eq, alpha_eq, color="grey", alpha=0.12, zorder=0,
+               label=rf"$|\beta| < \alpha_{{\mathrm{{eq}}}} = {alpha_eq:g}$")
     ax.axvline(0, color="black", lw=0.8, alpha=0.6, zorder=1)
     ax.axvline(-1.0, color="0.4", lw=0.6, ls="--", alpha=0.6, zorder=0)
     ax.axvline(1.0, color="0.4", lw=0.6, ls="--", alpha=0.6, zorder=0)
@@ -577,7 +583,9 @@ def _draw_bias_panel(
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=7)
     ax.invert_yaxis()
-    ax.set_xlabel(r"$\beta_{ij} = \Delta\mu_{ij}\,/\,\sigma_{\mathrm{run}}$")
+    ax.set_xlabel(
+        rf"$\beta_{{ij}} = \Delta\mu_{{ij}}\,/\,{_denom_math(denom_name)}$"
+    )
     ax.grid(True, axis="x", alpha=0.25, lw=0.5, zorder=0)
 
 

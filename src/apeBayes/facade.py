@@ -900,27 +900,38 @@ class BayesEpistemicModel:
         ref_draws = mu_config[:, ref_idx]         # (S,)
         denom_med = float(np.median(sigma_denom))
 
-        # Posterior beta draws (for violins) — normalise by median σ_GM
-        # so the violin shows Δμ uncertainty without denominator noise.
-        beta_draws = (mu_config - ref_draws[:, None]) / denom_med
+        # Posterior β draws (for violins) — divide by per-draw σ_GM so the
+        # violin is the same β posterior the CI whiskers summarise. Both
+        # therefore include denominator (σ_GM) uncertainty, not just Δμ.
+        beta_draws = (mu_config - ref_draws[:, None]) / sigma_denom[:, None]
         beta_labels = list(d.config_labels)
 
-        # Raw per-runkey dots and config means (for data overlay).
+        # Raw per-observation dots: one per (station, rupture) pair — no
+        # cross-station averaging. Paired subtraction at the same (s, r)
+        # cancels μ₀, δ_s, γ_{s,r} and λ_c·b_r at the linear-predictor
+        # level, so each raw dot is a realised standardised bias plus ε
+        # noise (and the λ_c ≠ 1 residual on b_r for non-reference Cases).
         n_configs = d.n_configs
+        n_stations = d.n_stations
         n_runs = d.n_runs
-        raw_dots = np.full((n_configs, n_runs), np.nan)
-        ref_by_run = np.zeros(n_runs)
-        for r in range(n_runs):
-            ref_mask = (d.config_idx == ref_idx) & (d.run_idx == r)
-            if ref_mask.any():
-                ref_by_run[r] = float(np.mean(d.y[ref_mask]))
+        n_pairs = n_stations * n_runs
+        raw_dots = np.full((n_configs, n_pairs), np.nan)
+
+        ref_mask = d.config_idx == ref_idx
+        ref_y_map: dict[tuple[int, int], float] = {
+            (int(d.station_idx[i]), int(d.run_idx[i])): float(d.y[i])
+            for i in np.where(ref_mask)[0]
+        }
+
         for k in range(n_configs):
-            for r in range(n_runs):
-                mask = (d.config_idx == k) & (d.run_idx == r)
-                if mask.any():
-                    raw_dots[k, r] = (
-                        float(np.mean(d.y[mask])) - ref_by_run[r]
-                    ) / denom_med
+            for i in np.where(d.config_idx == k)[0]:
+                s = int(d.station_idx[i])
+                r = int(d.run_idx[i])
+                ref_val = ref_y_map.get((s, r))
+                if ref_val is None:
+                    continue
+                col = s * n_runs + r
+                raw_dots[k, col] = (float(d.y[i]) - ref_val) / denom_med
         raw_means = np.nanmean(raw_dots, axis=1)
 
         return _plot(
@@ -929,6 +940,8 @@ class BayesEpistemicModel:
             raw_dots=raw_dots, raw_means=raw_means, raw_labels=beta_labels,
             station_subplots=station_subplots,
             ref_label=d.ref_label,
+            denom_name="GM",
+            alpha_eq=self.cfg.decision.alpha_eq,
             dot_alpha=dot_alpha, posterior_style=posterior_style,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
         )
