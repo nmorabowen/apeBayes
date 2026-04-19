@@ -172,11 +172,30 @@ class MultiEDPModel:
         *,
         denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Standardised bias table across all EDPs.
+        """Standardised bias table concatenated across all EDPs.
 
-        Returns a long DataFrame with an extra 'edp' column.
-        Canonical denominator is \u03c3_GM; pass ``denominator='src'`` or
-        ``'pred'`` for sensitivity views.
+        Thin wrapper that loops over per-EDP
+        :meth:`BayesEpistemicModel.standardized_bias_table` and prepends
+        ``edp`` and ``category`` (plus ``story`` / ``direction`` when set
+        on the :class:`EDPSpec`).
+
+        Parameters
+        ----------
+        ref : str, optional
+            Reference configuration label (same for every EDP). Defaults
+            to each model's ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configurations to report. Defaults to all.
+        denominator : {"src", "gm", "pred"}, default "gm"
+            Aleatory SD used as β denominator.
+
+            - ``"src"`` — σ_src only. Conservative.
+            - ``"gm"`` — canonical σ_GM = √(σ_src² + σ_inter²). Paper
+              default.
+            - ``"pred"`` — σ_pred with residual folded in. Generous.
+
+            See :meth:`BayesEpistemicModel.standardized_bias_table` for
+            the full "src / gm / pred" semantics.
         """
         self._check_fitted()
         frames = []
@@ -202,9 +221,23 @@ class MultiEDPModel:
         configs: list[str] | None = None,
         denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Equivalence probability table across all EDPs.
+        """Equivalence probability table concatenated across all EDPs.
 
-        ``alpha`` defaults to ``cfg.decision.alpha_eq`` (paper default 0.4).
+        Parameters
+        ----------
+        alpha : float, optional
+            Equivalence radius on the β scale. Defaults to
+            ``cfg.decision.alpha_eq`` (paper default 0.4).
+        ref : str, optional
+            Reference configuration label. Defaults to each model's
+            ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configurations. Defaults to all.
+        denominator : {"src", "gm", "pred"}, default "gm"
+            Aleatory SD used as β denominator. Same semantics as in
+            :meth:`BayesEpistemicModel.standardized_bias_table` — paper
+            uses ``"gm"``, sensitivity appendix also reports ``"src"``
+            and ``"pred"``.
         """
         self._check_fitted()
         frames = []
@@ -229,13 +262,38 @@ class MultiEDPModel:
         alpha_ladder: tuple[float, ...] | None = None,
         p_star: float | None = None,
     ) -> pd.DataFrame:
-        """Headline decision report across all EDPs (§3.1 of integration plan).
+        """Headline decision report concatenated across all EDPs (§3.1 of integration plan).
 
-        Concatenates each EDP's :meth:`BayesEpistemicModel.decision_report`
-        output with ``edp``, ``category`` (and ``story`` / ``direction``
-        when set on the EDPSpec) prepended. This is the primary Stage-1
+        Concatenates each EDP's
+        :meth:`BayesEpistemicModel.decision_report` with ``edp`` and
+        ``category`` (and ``story`` / ``direction`` when set on the
+        :class:`EDPSpec`) prepended. This is the primary Stage-1
         deliverable: the β field across EDP × config with decisions
         already attached.
+
+        Parameters
+        ----------
+        ref : str, optional
+            Reference configuration label. Defaults to each model's
+            ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configurations. Defaults to all.
+        denominators : tuple[str, ...], optional
+            Subset of ``{"src", "gm", "pred"}`` selecting which β
+            variants to compute. ``"gm"`` must be present (the P* gate
+            is defined on it). Defaults to ``cfg.decision.denominators``
+            (the full triple). See
+            :meth:`BayesEpistemicModel.decision_report` for the src /
+            gm / pred semantics.
+        alpha_eq : float, optional
+            Equivalence threshold for the ``decision`` column. Must be a
+            member of ``alpha_ladder``. Defaults to
+            ``cfg.decision.alpha_eq`` (0.4).
+        alpha_ladder : tuple[float, ...], optional
+            α values reported as P_eq columns. Defaults to
+            ``cfg.decision.alpha_ladder`` = ``(0.4, 0.7, 1.1)``.
+        p_star : float, optional
+            Probability gate. Defaults to ``cfg.decision.p_star`` = 0.95.
         """
         self._check_fitted()
         frames = []

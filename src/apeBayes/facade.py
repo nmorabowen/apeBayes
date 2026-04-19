@@ -328,11 +328,35 @@ class BayesEpistemicModel:
         *,
         denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Standardised epistemic bias β relative to a reference.
+        """Standardised epistemic bias β = Δμ / σ_denominator.
 
-        Canonical denominator is σ_GM (``denominator="gm"``); pass
-        ``"src"`` for the conservative β_src and ``"pred"`` for the
-        generous β_pred. See ``uncertanty_measures.md`` §4.
+        Parameters
+        ----------
+        ref : str, optional
+            Reference configuration label. Defaults to ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configuration labels to report. Defaults to all.
+        denominator : {"src", "gm", "pred"}, default "gm"
+            Aleatory SD used in the β denominator; see
+            ``uncertanty_measures.md`` §4 for the full definition.
+
+            - ``"src"`` — σ_src alone (pure source variability). Conservative:
+              smaller denominator ⇒ larger |β|. Matches the v6-era paper
+              convention; call it β_src in the sensitivity appendix.
+            - ``"gm"`` — canonical σ_GM = √(σ_src² + σ_inter²). Station-
+              specific aleatory spread under the DRM suite. Paper default;
+              the P* = 0.95 gate is defined on this denominator.
+            - ``"pred"`` — σ_pred = √(σ_GM² + σ_eps_eff²) with the
+              Student-t SD correction √(ν/(ν-2)) folded into σ_eps_eff.
+              Generous: absorbs the configuration-specific residual into
+              the aleatory pool, so |β_pred| < |β|.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per configuration. Columns: ``Config``,
+            ``std_bias_{med,lo,hi}``, ``dmu_{med,lo,hi}``,
+            ``mult_{med,lo,hi}``.
         """
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
@@ -353,11 +377,45 @@ class BayesEpistemicModel:
         configs: list[str] | None = None,
         denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Compute posterior probabilities for bias exceedance or equivalence.
+        """Posterior probability summaries of β under one of three modes.
 
-        Defaults pull from ``self.cfg.decision``: ``alpha_equiv=alpha_eq``
-        (0.4) and ``band=alpha_ladder[-1]`` (1.1). Pass explicit values
-        to override.
+        Parameters
+        ----------
+        mode : {"exceed_band", "within_equiv", "positive"}, default "within_equiv"
+            Which probability to compute per configuration:
+
+            - ``"exceed_band"`` — P(|β| > ``band``). Reads as "severely
+              biased at this α level"; use with ``band = α_ladder[-1]``
+              (paper default 1.1) for the top-rung "severely biased"
+              reference.
+            - ``"within_equiv"`` — P(|β| < ``alpha_equiv``). This is the
+              paper's headline P_eq (ROPE mass inside the equivalence
+              band). Use with ``alpha_equiv = α_eq`` (paper default 0.4);
+              the P* = 0.95 gate is applied to this column in
+              ``decision_report``.
+            - ``"positive"`` — P(β > 0). Direction-of-bias probability;
+              useful for answering "does configuration (t, c) over- or
+              under-predict relative to the reference?"
+        band : float, optional
+            Threshold for the ``"exceed_band"`` mode. Defaults to
+            ``cfg.decision.alpha_ladder[-1]`` (paper default 1.1).
+        alpha_equiv : float, optional
+            Threshold for the ``"within_equiv"`` mode. Defaults to
+            ``cfg.decision.alpha_eq`` (paper default 0.4).
+        ref : str, optional
+            Reference configuration label. Defaults to
+            ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configuration labels to report. Defaults to all.
+        denominator : {"src", "gm", "pred"}, default "gm"
+            Aleatory SD used as β denominator. Same semantics as in
+            :meth:`standardized_bias_table` — see that docstring for
+            the full "src / gm / pred" definitions.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``Config``, ``beta_med``, ``prob``, ``prob_label``.
         """
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
@@ -407,7 +465,38 @@ class BayesEpistemicModel:
         ``denominator_robust`` column flags configurations where the
         three denominators agree on the label.
 
-        Parameters default to ``self.cfg.decision``.
+        Parameters
+        ----------
+        ref : str, optional
+            Reference configuration label. Defaults to
+            ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configurations. Defaults to all.
+        denominators : tuple[str, ...], optional
+            Subset of ``{"src", "gm", "pred"}``. Defaults to
+            ``cfg.decision.denominators`` (the full triple).
+
+            - ``"src"`` — σ_src only. β_src columns will appear.
+            - ``"gm"`` — σ_GM = √(σ_src² + σ_inter²). **Required.** The P*
+              gate and the headline ``decision`` column are computed on
+              this denominator; dropping it raises ``ValueError``.
+            - ``"pred"`` — σ_pred with residual folded in. β_pred columns
+              will appear.
+
+            Drop a denominator only for a reduced summary table; the paper's
+            Results section requires the full triple to demonstrate
+            denominator robustness.
+        alpha_eq : float, optional
+            Equivalence threshold for the decision column. Defaults to
+            ``cfg.decision.alpha_eq`` (0.4). Must be a member of
+            ``alpha_ladder``.
+        alpha_ladder : tuple[float, ...], optional
+            α values reported as P_eq columns (under σ_GM). Defaults to
+            ``cfg.decision.alpha_ladder`` (0.4, 0.7, 1.1).
+        p_star : float, optional
+            Probability gate: ``P_eq ≥ p_star`` ⇒ ``"equivalent"``,
+            ``P_eq ≤ 1 − p_star`` ⇒ ``"inequivalent"``, else
+            ``"undecided"``. Defaults to ``cfg.decision.p_star`` (0.95).
 
         Returns
         -------
@@ -618,7 +707,24 @@ class BayesEpistemicModel:
         *,
         ratio_mode: Literal["var_over_sigma", "var_over_sigma2"] = "var_over_sigma",
     ) -> pd.DataFrame:
-        """Decompose mu surface into tier, case, and interaction effects."""
+        """Decompose the μ surface into tier, case, and interaction effects.
+
+        Parameters
+        ----------
+        ratio_mode : {"var_over_sigma", "var_over_sigma2"}, default "var_over_sigma"
+            How to scale each axis-wise variance contribution when reporting
+            it as an "energy share". Both use σ_run (source variability) as
+            the reference scale.
+
+            - ``"var_over_sigma"`` — contribution scaled by ``σ_run``
+              (standard-deviation units). Matches the scale on which β is
+              reported, so numbers read as "shift in standardised-bias
+              units per axis". Default.
+            - ``"var_over_sigma2"`` — contribution scaled by ``σ_run²``
+              (variance units). Dimensionally consistent with a classical
+              ANOVA variance-share table; percentages add up to the
+              total explained variance more cleanly.
+        """
         p = self.posterior
         f0_levels, f1_levels, grid = self.data.factor_index_grid()
         decomp = decomposition.axiswise_decomposition_draws(
@@ -653,10 +759,23 @@ class BayesEpistemicModel:
         configs: list[str] | None = None,
         denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Compute equivalence probability at threshold ``alpha``.
+        """P_eq(t, c; α) = P(|β_{t,c}| < α) per configuration vs reference.
 
-        ``alpha`` defaults to ``cfg.decision.alpha_eq`` (paper default 0.4).
-        ``denominator`` defaults to the canonical σ_GM.
+        Parameters
+        ----------
+        alpha : float, optional
+            Equivalence radius on the β scale. Defaults to
+            ``cfg.decision.alpha_eq`` (paper default 0.4).
+        ref : str, optional
+            Reference configuration label. Defaults to
+            ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configurations. Defaults to all.
+        denominator : {"src", "gm", "pred"}, default "gm"
+            Aleatory SD used as β denominator. Same semantics as in
+            :meth:`standardized_bias_table`. Paper uses ``"gm"`` for the
+            headline P_eq and reports ``"src"`` / ``"pred"`` in the
+            sensitivity appendix.
         """
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
@@ -677,7 +796,20 @@ class BayesEpistemicModel:
         configs: list[str] | None = None,
         denominator: Literal["src", "gm", "pred"] = "gm",
     ) -> pd.DataFrame:
-        """Sweep equivalence probability across a range of α values."""
+        """Sweep P_eq across a range of α thresholds (long-format DataFrame).
+
+        Parameters
+        ----------
+        alphas : np.ndarray, optional
+            α values to sweep. If None, uses a default grid covering the
+            α ladder.
+        ref, configs : optional
+            Same as :meth:`equivalence_probability_table`.
+        denominator : {"src", "gm", "pred"}, default "gm"
+            Aleatory SD used as β denominator. See
+            :meth:`standardized_bias_table` for the three choices'
+            semantics.
+        """
         p = self.posterior
         ref_idx = self.data.config_label_to_idx(ref) if ref else p.ref_idx
         labels, subset_idx = self.data.subset_config_indices(configs)
@@ -694,11 +826,27 @@ class BayesEpistemicModel:
         configs: list[str] | None = None,
         denominator: Literal["src", "gm"] = "gm",
     ) -> tuple[list[str], np.ndarray]:
-        """Compute the pairwise epistemic equivalence probability matrix.
+        """Pairwise P(|μ_i − μ_j| < α·σ_denom) matrix across all configs.
 
-        Only 1-D denominators are supported here (pairwise comparisons
-        share a single station-level aleatory scale per draw), so
-        ``denominator="pred"`` is not allowed.
+        Parameters
+        ----------
+        alpha : float, optional
+            Equivalence radius. Defaults to ``cfg.decision.alpha_eq``.
+        configs : list[str], optional
+            Subset of configurations to include in the matrix. Defaults to all.
+        denominator : {"src", "gm"}, default "gm"
+            Aleatory SD used as β denominator. ``"pred"`` is **not
+            supported** here — pairwise comparisons share a single
+            station-level aleatory scale per draw, so a per-configuration
+            σ_pred would have no unambiguous "which config's residual"
+            answer. Use ``"gm"`` for the paper's canonical pairwise matrix
+            or ``"src"`` for the v6-era sensitivity view.
+
+        Returns
+        -------
+        (labels, matrix) : (list[str], np.ndarray)
+            Ordered config labels and an ``(M, M)`` symmetric probability
+            matrix with ones on the diagonal.
         """
         p = self.posterior
         labels, subset_idx = self.data.subset_config_indices(configs)
@@ -720,7 +868,47 @@ class BayesEpistemicModel:
         n_clusters: int | None = None,
         denominator: Literal["src", "gm"] = "gm",
     ) -> pd.DataFrame:
-        """Cluster configurations by epistemic equivalence distance."""
+        r"""Hierarchical clustering of configurations by epistemic distance.
+
+        Builds a distance matrix ``D = 1 − P_eq`` and runs SciPy linkage +
+        flat-cluster extraction.
+
+        Parameters
+        ----------
+        alpha : float, optional
+            Equivalence radius. Defaults to ``cfg.decision.alpha_eq``.
+        configs : list[str], optional
+            Subset of configurations. Defaults to all.
+        method : {"single", "complete", "average", "weighted", \\
+                  "centroid", "median", "ward"}, default "average"
+            Linkage method passed to
+            ``scipy.cluster.hierarchy.linkage``.
+
+            - ``"single"`` — nearest-neighbour; chain-prone.
+            - ``"complete"`` — furthest-neighbour; compact clusters.
+            - ``"average"`` — UPGMA, balances chaining vs compactness.
+              Good general default for 16-config grids.
+            - ``"weighted"`` — WPGMA (average with equal branch weight).
+            - ``"centroid"``, ``"median"``, ``"ward"`` — centroid-based;
+              assume Euclidean geometry, less natural on probability
+              distances.
+        threshold : float, optional
+            Distance cutoff for flat clusters. Mutually exclusive with
+            ``n_clusters``. If both are None, defaults to ``1 − α`` so
+            that two configs with ``P_eq < α`` land in the same cluster.
+        n_clusters : int, optional
+            If set, cut the linkage tree to produce exactly this many
+            flat clusters (``criterion="maxclust"``).
+        denominator : {"src", "gm"}, default "gm"
+            Aleatory SD for β. ``"pred"`` is not supported (same pairwise
+            ambiguity as :meth:`epistemic_equivalence_matrix`).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: ``Config``, ``cluster``, ``leaf_order``; sorted by
+            cluster then leaf order.
+        """
         p = self.posterior
         labels, subset_idx = self.data.subset_config_indices(configs)
         if alpha is None:
@@ -836,7 +1024,29 @@ class BayesEpistemicModel:
         prefix: str = "",
         filename: str | None = None,
     ) -> tuple[plt.Figure, plt.Axes]:
-        """Plot effective sample size bar chart."""
+        """Plot effective sample size bar chart.
+
+        Parameters
+        ----------
+        kind : {"bulk", "tail"}, default "bulk"
+            Which ESS flavour to plot.
+
+            - ``"bulk"`` — ESS in the centre of the posterior (rank-based).
+              Check this first; usually the binding constraint for reliable
+              posterior means and medians.
+            - ``"tail"`` — ESS in the tails (quantile-based). Check when
+              the 5th/95th CI is what matters (e.g., β decision intervals).
+              Typically 2× smaller than bulk ESS for heavy-tailed posteriors.
+        top_n : int, optional
+            If set, show only the ``top_n`` worst-ESS parameter groups.
+        threshold : float, default 400.0
+            ESS line drawn on the plot as a "good enough" marker. ESS
+            ≥ 400 is the rule-of-thumb floor for reliable quantiles from
+            a 4-chain run.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet. ``filename=None`` yields the
+            default ``f"ess_{kind}_bar.pdf"``.
+        """
         from .plots.diagnostics import plot_ess_bar as _plot
         return _plot(
             self.ess_table(),
@@ -860,7 +1070,35 @@ class BayesEpistemicModel:
         out_dir: str | Path | None = None,
         prefix: str = "",
     ) -> tuple[plt.Figure, np.ndarray]:
-        """Plot three-panel heatmap of absolute mu, delta-mu, and median ratio."""
+        """Three-panel heatmap: absolute μ, Δμ vs ref, median EDP ratio.
+
+        Parameters
+        ----------
+        ref : str, optional
+            Reference configuration label for the Δμ and ratio panels.
+            Defaults to ``self.data.ref_label``.
+        original_edp_scale : bool, default False
+            If True, exponentiate μ values back to the native EDP scale
+            (``exp(μ)``). Leave False for the log-EDP scale used
+            throughout the paper.
+        annot : bool, default True
+            Annotate each heatmap cell with its numeric value.
+        fmt_mu, fmt_dmu, fmt_ratio : str, default ".2f"
+            Python format specs (mini-language) for the three panels'
+            cell annotations. Examples: ``".2f"`` (default), ``".0%"``
+            (percent, no decimals), ``".3g"`` (3-significant-figure
+            general), ``".2e"`` (scientific notation). The full format
+            spec reference is at
+            https://docs.python.org/3/library/string.html#format-specification-mini-language.
+        cmap : str, default ``CMAP_DIV``
+            Matplotlib colormap name used for all three panels. Use a
+            diverging palette so Δμ reads correctly around zero (the
+            package default ``CMAP_DIV`` already is). Common built-in
+            choices: ``"RdBu_r"``, ``"coolwarm"``, ``"PuOr"``.
+        figsize, out_dir, prefix
+            Standard figure-save triplet (no ``filename`` — this plot
+            writes three PDFs with fixed suffixes).
+        """
         ref = ref or self.data.ref_label
         mu_hat = self.mu_hat_table()
         bias_df = self.standardized_bias_table()
@@ -888,6 +1126,32 @@ class BayesEpistemicModel:
         Uses σ_GM (canonical denominator) for the standardised axis.
         The β draws, raw-data dots, and reference label are computed
         from the fit and injected automatically.
+
+        Parameters
+        ----------
+        station_subplots : bool, default False
+            If True, produce one panel per station instead of one combined
+            panel — useful for visualising between-station heterogeneity.
+        dot_alpha : float, default 0.28
+            Alpha for the raw per-observation dots layered under the
+            posterior density. Drop lower (~0.1) if you have many runs
+            per configuration.
+        posterior_style : {"violin", "ridge", "none"}, default "violin"
+            How to render the posterior β density per configuration.
+
+            - ``"violin"`` — symmetric violin centred on the β median,
+              with matplotlib's default smoothing. Best for the main-text
+              figure where vertical space is at a premium.
+            - ``"ridge"`` — KDE ridge baseline with the density stacked
+              above. Reads more naturally when configurations are compared
+              by shape as well as centre; uses more vertical room.
+            - ``"none"`` — no density layer; only the median/CI whiskers
+              and the raw-data dots. Use when overlaying the figure on
+              another panel or when the density adds noise to a compact
+              layout.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet. ``figsize=None`` auto-selects
+            based on whether ``station_subplots`` is set.
         """
         bias_df = self.standardized_bias_table()
         from .plots.bias import plot_standardized_bias as _plot
@@ -974,7 +1238,7 @@ class BayesEpistemicModel:
         self,
         *,
         station_subplots: bool = False,
-        denom_name: str = "GM",
+        denom_name: Literal["GM", "src", "pred"] = "GM",
         overlap: float = 0.6,
         bw_adjust: float = 0.4,
         figsize: tuple[float, float] | None = None,
@@ -982,8 +1246,46 @@ class BayesEpistemicModel:
         prefix: str = "",
         filename: str = "bias_ridgeplot.pdf",
     ) -> tuple[plt.Figure, np.ndarray]:
-        """Plot ridgeplot of posterior β densities (σ_GM denominator)."""
+        """Plot ridgeplot of posterior β densities under the chosen denominator.
+
+        ``denom_name`` picks **both** the denominator draws used to build β
+        **and** the LaTeX label on the x-axis. The two stay in sync
+        automatically — don't rely on the underlying plot function to infer
+        the denominator from the label.
+
+        Parameters
+        ----------
+        station_subplots : bool, default False
+            One panel per station with observed-data dots overlaid, instead
+            of a single combined panel.
+        denom_name : {"GM", "src", "pred"}, default "GM"
+            Aleatory SD used as β denominator and reflected in the axis
+            label.
+
+            - ``"GM"`` — canonical σ_GM = √(σ_src² + σ_inter²). Paper
+              default; use for the main bias figure.
+            - ``"src"`` — σ_src only. Conservative sensitivity view.
+            - ``"pred"`` — σ_pred with residual folded in (evaluated at the
+              reference configuration). Generous sensitivity view.
+        overlap : float, default 0.6
+            Ridge stacking overlap (0 = disjoint, 1 = full overlap).
+        bw_adjust : float, default 0.4
+            Bandwidth multiplier for the KDE. Lower ⇒ spikier densities.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+        """
         p = self.posterior
+        if denom_name == "GM":
+            sigma_denom = self.sigma_GM_draws()
+        elif denom_name == "src":
+            sigma_denom = self.sigma_src_draws()
+        elif denom_name == "pred":
+            sigma_denom = self.sigma_pred_draws()
+        else:  # pragma: no cover — Literal guard would catch at type-check time
+            raise ValueError(
+                f"denom_name must be one of 'GM'/'src'/'pred', got {denom_name!r}"
+            )
+
         from .plots.bias import plot_bias_ridgeplot as _plot
         extra: dict[str, Any] = {}
         if station_subplots:
@@ -994,7 +1296,7 @@ class BayesEpistemicModel:
                 station_labels=list(self.data.station_labels),
             )
         return _plot(
-            p.mu_config(), self.sigma_GM_draws(),
+            p.mu_config(), sigma_denom,
             p.config_labels, p.ref_idx,
             denom_name=denom_name, overlap=overlap, bw_adjust=bw_adjust,
             figsize=figsize, out_dir=out_dir, prefix=prefix, filename=filename,
@@ -1018,9 +1320,41 @@ class BayesEpistemicModel:
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot bar chart of β probability under the requested mode.
 
-        The first six kwargs are forwarded to :meth:`bias_probability_table`;
-        the rest control the plot. ``prob_col='prob'`` is pinned internally
-        to match the table's output column.
+        Parameters
+        ----------
+        mode : {"exceed_band", "within_equiv", "positive"}, default "within_equiv"
+            Which probability to bar-chart; same three choices as in
+            :meth:`bias_probability_table`:
+
+            - ``"exceed_band"`` — P(|β| > ``band``) per config.
+            - ``"within_equiv"`` — P(|β| < ``alpha_equiv``); the headline
+              P_eq plot.
+            - ``"positive"`` — P(β > 0); bias-direction plot.
+        alpha_equiv : float, optional
+            Threshold for ``"within_equiv"``. Defaults to
+            ``cfg.decision.alpha_eq``.
+        band : float, optional
+            Threshold for ``"exceed_band"``. Defaults to
+            ``cfg.decision.alpha_ladder[-1]``.
+        ref : str, optional
+            Reference configuration. Defaults to ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configurations. Defaults to all.
+        denominator : {"src", "gm", "pred"}, default "gm"
+            Aleatory SD used as β denominator. Same semantics as in
+            :meth:`standardized_bias_table`.
+        threshold_label : str, default ""
+            Optional text label drawn at the threshold line on the x-axis
+            (e.g. ``"α_eq"`` or ``"3×"``). Empty string suppresses the
+            annotation.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+
+        Notes
+        -----
+        ``prob_col='prob'`` is pinned internally to match the column name
+        emitted by :meth:`bias_probability_table` (previously a split-kwargs
+        hazard that silently picked the wrong column).
         """
         prob_df = self.bias_probability_table(
             mode=mode, alpha_equiv=alpha_equiv, band=band,
@@ -1135,13 +1469,35 @@ class BayesEpistemicModel:
     def plot_sigma_stability_triptych(
         self,
         *,
-        order_by: str = "stability",
+        order_by: Literal["stability", "config"] = "stability",
         figsize: tuple[float, float] = (FULL_WIDTH, 4.5),
         out_dir: str | Path | None = None,
         prefix: str = "",
         filename: str = "sigma_stability_triptych.pdf",
     ) -> tuple[plt.Figure, np.ndarray]:
-        """Plot three-panel sigma stability figure."""
+        """Plot three-panel σ_ε stability diagnostic.
+
+        Panels: posterior σ_ε violins + CI, relative CI width, and
+        P(σ_ij ≤ σ_ref) per configuration.
+
+        Parameters
+        ----------
+        order_by : {"stability", "config"}, default "stability"
+            Row-ordering on all three panels.
+
+            - ``"stability"`` — configurations sorted ascending by median
+              σ_ε (most stable on top). Best for spotting which configs
+              are the noisy ones.
+            - ``"config"`` — original configuration-label order from
+              ``self.data.config_labels`` (i.e., the Tier×Case grid as
+              fitted). Use when you want to read the figure alongside
+              other plots that use the same order.
+
+            Any other string falls back to input order, same as
+            ``"config"``.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+        """
         p = self.posterior
         from .plots.variance import plot_sigma_stability_triptych as _plot
         return _plot(
@@ -1190,7 +1546,34 @@ class BayesEpistemicModel:
         prefix: str = "",
         filename: str = "equivalence_matrix_dendro.pdf",
     ) -> tuple[plt.Figure, np.ndarray, np.ndarray]:
-        """Plot equivalence heatmap with dendrogram overlay."""
+        r"""Equivalence heatmap with a clustering dendrogram overlay.
+
+        Parameters
+        ----------
+        alpha : float, optional
+            Equivalence radius. Defaults to ``cfg.decision.alpha_eq``.
+        method : {"single", "complete", "average", "weighted", \\
+                  "centroid", "median", "ward"}, default "average"
+            Linkage method passed to
+            ``scipy.cluster.hierarchy.linkage``. ``"average"`` (UPGMA) is
+            the natural choice on a probability-distance matrix; see
+            :meth:`epistemic_clusters_table` for how the seven options
+            differ.
+        cluster_order : bool, default True
+            If True, reorder rows/columns so cluster-adjacent configs are
+            visually adjacent in the heatmap. Set False to keep the
+            original configuration-label order (useful when comparing
+            multiple figures that should share an axis).
+        annot : bool, default True
+            Annotate each cell with its P_eq value.
+        fmt : str, default ".2f"
+            Format spec for the cell annotations (e.g. ``".0%"`` for
+            percentages).
+        cmap : str, default ``CMAP_SEQ``
+            Matplotlib colormap name for the probability heat layer.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+        """
         if alpha is None:
             alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
@@ -1214,7 +1597,21 @@ class BayesEpistemicModel:
         prefix: str = "",
         filename: str = "equivalence_dendrogram.pdf",
     ) -> tuple[plt.Figure, plt.Axes]:
-        """Plot epistemic-distance dendrogram."""
+        r"""Dendrogram built from the epistemic distance matrix D = 1 − P_eq.
+
+        Parameters
+        ----------
+        alpha : float, optional
+            Equivalence radius used to build D. Defaults to
+            ``cfg.decision.alpha_eq``.
+        method : {"single", "complete", "average", "weighted", \\
+                  "centroid", "median", "ward"}, default "average"
+            Linkage method passed to
+            ``scipy.cluster.hierarchy.linkage``. See
+            :meth:`epistemic_clusters_table` for what each option means.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+        """
         if alpha is None:
             alpha = self.cfg.decision.alpha_eq
         labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
@@ -1425,7 +1822,42 @@ class BayesEpistemicModel:
         prefix: str = "",
         filename: str = "mu_posterior_density.pdf",
     ) -> tuple[plt.Figure, np.ndarray]:
-        """Plot posterior density of configuration intercepts."""
+        """Posterior density (or CDF) of the modelled mean μ per configuration.
+
+        Parameters
+        ----------
+        configs : list[str], optional
+            Subset of configuration labels to include. Defaults to all.
+        station_idx : int, optional
+            If set, evaluate μ at this specific station (adds δ_{station}
+            to μ₀ + μ_config). If None, μ is the population-level mean.
+        run_idx : int, optional
+            If set, evaluate μ at this specific rupture (adds b_run).
+            Stacks with ``station_idx``.
+        original_edp_scale : bool, default False
+            If True, exponentiate back to the native EDP scale
+            (``exp(μ)``). Leave False for the log-EDP scale used
+            throughout the paper.
+        kind : {"density", "cdf"}, default "density"
+            What to plot per configuration:
+
+            - ``"density"`` — kernel-density estimate of the posterior.
+              Shows shape, multimodality, and tails. Natural for comparing
+              configuration centres visually.
+            - ``"cdf"`` — empirical cumulative distribution of the
+              posterior draws. Reads crossings easily; best when you want
+              to compare specific quantiles (e.g. median, 90%) across
+              configs.
+        normalize : bool, default False
+            For ``kind="density"``: if True, scale each config's density
+            to peak at 1 (visual only — destroys integral=1). Useful when
+            configurations have very different variances and the larger-
+            variance ones would otherwise disappear under a common y-axis.
+        n_cols : int, default 4
+            Number of subplot columns in the panel grid.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+        """
         p = self.posterior
         from .plots.posterior import plot_mu_density as _plot
         return _plot(

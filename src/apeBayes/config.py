@@ -77,7 +77,36 @@ class PriorConfig:
 
 @dataclass(frozen=True)
 class SamplingConfig:
-    """MCMC sampler settings."""
+    """MCMC sampler settings.
+
+    Parameters
+    ----------
+    draws : int, default 2000
+        Post-tune posterior draws per chain. Paper v8 run uses 10_000.
+    tune : int, default 2000
+        Tuning (burn-in) iterations per chain.
+    chains : int, default 4
+        Independent chains. ArviZ R̂ and ESS diagnostics need ≥ 2 to be
+        meaningful; 4 is the standard minimum for robust diagnostics.
+    target_accept : float, default 0.92
+        NUTS acceptance-rate target. Raise toward 0.99 if the sampler
+        reports divergences; lower to 0.8 for faster runs on easy
+        posteriors. Must lie in (0, 1).
+    max_treedepth : int, default 12
+        NUTS max tree depth. Raise (e.g., to 15) if the sampler hits
+        the limit frequently; lower to 10 for well-behaved models.
+    seed : int, default 123
+        RNG seed for reproducibility.
+    sampler : {"nutpie", "pymc"}, default "nutpie"
+        Which NUTS backend to use.
+
+        - ``"nutpie"`` — Rust-based NUTS (package ``nutpie``). 3-5×
+          faster than PyMC's pure-Python NUTS on our model size.
+          Default. Requires the ``fast`` optional dependency group.
+        - ``"pymc"`` — PyMC's built-in NUTS. Slower but has no extra
+          dependency. Use if ``nutpie`` isn't importable or if you need
+          features it doesn't support (e.g., some custom step methods).
+    """
 
     draws: int = 2000
     tune: int = 2000
@@ -164,29 +193,48 @@ class DecisionConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Full model specification.
+    r"""Full model specification.
 
     Parameters
     ----------
     factors : list[FactorSpec]
         Ordered list of epistemic modelling dimensions.  The Cartesian product
         of their levels forms the configuration space.
-    config_col : str
-        Name of the (possibly derived) flat configuration column.
-    edp_col : str
-        Column holding the (already log-transformed) EDP values.
-    station_col : str
+    config_col : str, default "TierCase"
+        Name of the (possibly derived) flat configuration column in the
+        long-format DataFrame. Change only if your input uses a different
+        name.
+    edp_col : str, default "edp"
+        Column holding the **already log-transformed** EDP values. The
+        model fits on ``y = log(EDP)``; do not pass raw EDP values.
+    station_col : str, default "sta"
         Column identifying the recording station.
-    run_col : str
-        Column identifying the earthquake realisation (run key).
-    ref_config : str
-        Label of the reference configuration (e.g. "4D").
-    likelihood : {"student_t", "gaussian"}
+    run_col : str, default "runkey"
+        Column identifying the earthquake realisation (run key). Must
+        uniquely identify a rupture within the 6-rupture DRM suite.
+    ref_config : str, default "4D"
+        Label of the reference configuration used for all contrasts
+        (:math:`\\Delta\\mu_{t,c} = \\mu_{t,c} - \\mu_{\\text{ref}}`). Must
+        be a valid value in ``config_col``.
+    likelihood : {"student_t", "gaussian"}, default "student_t"
         Observation likelihood family.
-    heteroskedastic : bool
-        If True, estimate a separate σ_ε per configuration.
-    ci : tuple[float, float]
-        Credible-interval quantiles for posterior summaries.
+
+        - ``"student_t"`` — heavy-tailed residuals. Robust to outliers and
+          to station-to-station heteroskedasticity that survives the
+          per-config residual σ_ε. Paper default.
+        - ``"gaussian"`` — Normal residuals. Faster to sample, but the
+          variance-ratio diagnostics will flag problems if the true
+          residuals have heavy tails. Use only for quick sanity checks.
+    heteroskedastic : bool, default True
+        If True, estimate a separate σ_ε per configuration. Paper uses
+        True (heteroskedastic) because A/B/C/D cases have genuinely
+        different residual scales.
+    ci : tuple[float, float], default (0.05, 0.95)
+        Credible-interval quantiles for posterior summaries. ``(0.05,
+        0.95)`` is a 90% central interval.
+    config_sep : str, default ""
+        Separator inserted between factor levels when generating flat
+        config labels. ``""`` gives ``"4D"``; ``"_"`` gives ``"4_D"``.
     priors : PriorConfig
         Prior hyper-parameters.
     sampling : SamplingConfig
