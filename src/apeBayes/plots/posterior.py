@@ -25,6 +25,7 @@ from .style import (
     STATION_COLORS,
     STEEL,
     TEAL,
+    fs,
 )
 
 if TYPE_CHECKING:
@@ -203,7 +204,7 @@ def plot_ppc(
     ax.set_xlabel("Posterior predictive p-value")
     ax.set_xlim(0, 1.05)
     ax.invert_yaxis()
-    ax.legend(fontsize=7, loc="lower right")
+    ax.legend(fontsize=fs(-1), loc="lower right")
     ax.set_title("Posterior predictive check")
 
     savefig(fig, out_dir, filename, prefix=prefix)
@@ -279,7 +280,7 @@ def plot_station_posteriors(
 
     ax.set_xlabel(r"$\delta_{\mathrm{station}}$ (log EDP)")
     ax.set_ylabel("Density")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=fs(-1))
     ax.set_title("Station effect posteriors")
 
     savefig(fig, out_dir, filename, prefix=prefix)
@@ -318,7 +319,7 @@ def plot_observed_vs_predicted(
             ax.scatter(y_hat[mask], y_obs[mask], s=12, alpha=0.6,
                        color=PALETTE[k % len(PALETTE)], label=lbl,
                        edgecolors="none")
-        ax.legend(fontsize=5, ncol=2, loc="upper left", markerscale=0.8)
+        ax.legend(fontsize=fs(-3), ncol=2, loc="upper left", markerscale=0.8)
     else:
         ax.scatter(y_hat, y_obs, s=12, alpha=0.5, color=PALETTE[0],
                    edgecolors="none")
@@ -377,9 +378,9 @@ def plot_raw_data(
         ax.scatter(np.array(x_pos) + jitter, sub["y"], s=15, alpha=0.7,
                    color=PALETTE[i % len(PALETTE)], label=sta, edgecolors="none")
     ax.set_xticks(range(len(label_order)))
-    ax.set_xticklabels(label_order, rotation=45, ha="right", fontsize=7)
+    ax.set_xticklabels(label_order, rotation=45, ha="right", fontsize=fs(-1))
     ax.set_ylabel("log EDP")
-    ax.legend(fontsize=7, title="Station", title_fontsize=7)
+    ax.legend(fontsize=fs(-1), title="Station", title_fontsize=7)
     ax.set_title("Raw data by config (colored by station)")
 
     # Right: boxplot
@@ -390,7 +391,7 @@ def plot_raw_data(
     for patch, color_idx in zip(bp["boxes"], range(len(label_order)), strict=False):
         patch.set_facecolor(PALETTE[color_idx % len(PALETTE)])
         patch.set_alpha(0.5)
-    ax2.set_xticklabels(label_order, rotation=45, ha="right", fontsize=7)
+    ax2.set_xticklabels(label_order, rotation=45, ha="right", fontsize=fs(-1))
     ax2.set_ylabel("log EDP")
     ax2.set_title("Distribution by config")
 
@@ -434,7 +435,7 @@ def plot_ppc_density(
     ax.set_xlabel("log EDP")
     ax.set_ylabel("Density")
     ax.set_title("Posterior predictive check")
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=fs(-1))
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, ax

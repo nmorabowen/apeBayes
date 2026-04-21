@@ -145,3 +145,41 @@ def apply_style(
     })
 
     plt.rcParams.update(rc)
+
+
+def fs(delta: float = 0.0, floor: float = 5.0) -> float:
+    """Return ``rcParams['font.size'] + delta``, clamped at ``floor``.
+
+    Use inside plot functions instead of hardcoded ``fontsize=N`` literals
+    so that per-element overrides scale with ``apply_style(context=...)``.
+    The standards in ``reference_paper_figure_standards.md`` assume an 8 pt
+    paper base; calls like ``fs(-1)`` (tick labels, 7 pt at paper) then
+    render as 9 pt at notebook context without further changes.
+
+    Canonical deltas for the composite-subplot table in that spec:
+
+    ====================  =======  =================
+    Role                  Delta    Paper-ctx result
+    ====================  =======  =================
+    Panel title / body    ``  0``  8 pt
+    Tick labels / small   ``-1``   7 pt
+    Small annotation      ``-2``   6 pt
+    Dense legend          ``-3``   5 pt (= floor)
+    Panel subtitle        ``+1``   9 pt
+    Figure suptitle       ``+2``   10 pt
+    ====================  =======  =================
+
+    Parameters
+    ----------
+    delta : float, default 0.0
+        Offset in points from the current base font size.
+    floor : float, default 5.0
+        Minimum returned size (legibility guardrail; 5 pt is the
+        Wiley-guideline smallest acceptable figure text).
+
+    Returns
+    -------
+    float
+        Font size in points, suitable for ``fontsize=...`` kwargs.
+    """
+    return max(plt.rcParams["font.size"] + delta, floor)

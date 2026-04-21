@@ -19,7 +19,7 @@ from .helpers import (
     savefig,
     symmetric_bounds,
 )
-from .style import CMAP_DIV, FULL_WIDTH, HALF_WIDTH, PALETTE
+from .style import CMAP_DIV, FULL_WIDTH, HALF_WIDTH, PALETTE, fs
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -220,7 +220,7 @@ def _draw_ridges(
 
     ax.axvline(0, color="0.4", lw=0.8, ls="--", zorder=0)
     ax.set_yticks([i * spacing for i in range(n)])
-    ax.set_yticklabels(configs_plot, fontsize=7)
+    ax.set_yticklabels(configs_plot, fontsize=fs(-1))
     ax.set_ylim(-0.3 * spacing, n * spacing)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -319,14 +319,14 @@ def plot_bias_ridgeplot(
                 )
 
             ax.set_xlabel(x_label)
-            ax.set_title(str(sta), fontsize=9)
+            ax.set_title(str(sta), fontsize=fs(+1))
             if s > 0:
                 ax.set_yticklabels([])
 
         fig.suptitle(
             f"Posterior bias vs {config_labels[ref_idx]}  "
             r"($\diamondsuit$ = observed)",
-            fontsize=9,
+            fontsize=fs(+1),
         )
     else:
         if figsize is None:
@@ -440,13 +440,13 @@ def plot_standardized_bias(
         axes = np.array([ax])
 
     if ref_label is not None:
-        fig.suptitle(rf"Standardised bias $\beta$ vs {ref_label}", fontsize=9)
+        fig.suptitle(rf"Standardised bias $\beta$ vs {ref_label}", fontsize=fs(+1))
 
     handles, labs = axes[0].get_legend_handles_labels()
     if handles:
         fig.legend(handles, labs, loc="upper center",
                    bbox_to_anchor=(0.5, -0.01), ncol=3,
-                   fontsize=6, frameon=True)
+                   fontsize=fs(-2), frameon=True)
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, axes
@@ -581,7 +581,7 @@ def _draw_bias_panel(
     )
 
     ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=7)
+    ax.set_yticklabels(labels, fontsize=fs(-1))
     ax.invert_yaxis()
     ax.set_xlabel(
         rf"$\beta_{{ij}} = \Delta\mu_{{ij}}\,/\,{_denom_math(denom_name)}$"
@@ -623,13 +623,13 @@ def plot_radar_bias_probability(
     ax.scatter(angles, vals, c=spoke_colors, s=25, zorder=5, edgecolors="white", linewidths=0.4)
 
     ax.set_xticks(angles)
-    ax.set_xticklabels(labels, fontsize=7)
+    ax.set_xticklabels(labels, fontsize=fs(-1))
     ax.set_ylim(0, 1)
     ax.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=6)
+    ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=fs(-2))
     ax.set_title(
         rf"$P(|\beta| < {alpha}\,\sigma_{{\mathrm{{run}}}})$ vs {ref}",
-        pad=15, fontsize=8,
+        pad=15, fontsize=fs(),
     )
 
     savefig(fig, out_dir, filename, prefix=prefix)

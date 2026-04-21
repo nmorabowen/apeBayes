@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .helpers import ensure_dir, savefig, symmetric_bounds
-from .style import CMAP_DIV, FULL_WIDTH, HALF_WIDTH, PALETTE
+from .style import CMAP_DIV, FULL_WIDTH, HALF_WIDTH, PALETTE, fs
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,9 +89,9 @@ def plot_interaction_heatmap(
     fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
     im = ax.imshow(mat, cmap=CMAP_DIV, vmin=vmin, vmax=vmax, aspect="auto")
     ax.set_xticks(np.arange(n_rk))
-    ax.set_xticklabels(run_labels, fontsize=8)
+    ax.set_xticklabels(run_labels, fontsize=fs())
     ax.set_yticks(np.arange(n_st))
-    ax.set_yticklabels(station_labels, fontsize=8)
+    ax.set_yticklabels(station_labels, fontsize=fs())
     ax.set_xlabel("Rupture")
     ax.set_ylabel("Station")
     ax.set_title(r"$\gamma_{sr}$: station$\times$rupture interaction (posterior median)")
@@ -102,7 +102,7 @@ def plot_interaction_heatmap(
             for j in range(n_rk):
                 col = "white" if abs(mat[i, j]) > thr else "black"
                 ax.text(j, i, f"{mat[i, j]:+.3f}", ha="center", va="center",
-                        fontsize=7, color=col)
+                        fontsize=fs(-1), color=col)
 
     cbar = fig.colorbar(im, ax=ax, label=r"$\gamma_{sr}$  (log EDP)", shrink=0.85)
     cbar.ax.tick_params(labelsize=7)
@@ -196,18 +196,18 @@ def plot_interaction_by_case(
 
         xi_val = xi_med[c]
         suff = "" if xi_case_draws is None else rf"  ($\xi={xi_val:.2f}$)"
-        ax.set_title(f"Case {lbl}{suff}", fontsize=9)
+        ax.set_title(f"Case {lbl}{suff}", fontsize=fs(+1))
 
         ax.set_xticks(np.arange(n_rk))
         ax.set_yticks(np.arange(n_st))
         # Only label edges of the grid
         if r == nrows - 1:
-            ax.set_xticklabels(run_labels, fontsize=7)
+            ax.set_xticklabels(run_labels, fontsize=fs(-1))
             ax.set_xlabel("Rupture")
         else:
             ax.set_xticklabels([])
         if cc == 0:
-            ax.set_yticklabels(station_labels, fontsize=7)
+            ax.set_yticklabels(station_labels, fontsize=fs(-1))
             ax.set_ylabel("Station")
         else:
             ax.set_yticklabels([])
@@ -218,7 +218,7 @@ def plot_interaction_by_case(
                 for j in range(n_rk):
                     col = "white" if abs(mat[i, j]) > thr else "black"
                     ax.text(j, i, f"{mat[i, j]:+.2f}", ha="center", va="center",
-                            fontsize=6, color=col)
+                            fontsize=fs(-2), color=col)
 
     # Hide extra axes if the grid is not fully filled
     for c in range(n_cases, nrows * ncols):
@@ -237,7 +237,7 @@ def plot_interaction_by_case(
     title = ("Effective station"
              r"$\times$rupture interaction per Case"
              + ("  (v9: $\\xi$-loaded)" if xi_case_draws is not None else ""))
-    fig.suptitle(title, fontsize=10, fontweight="bold")
+    fig.suptitle(title, fontsize=fs(+2), fontweight="bold")
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, axes
@@ -319,7 +319,7 @@ def plot_interaction_forest(
     ax.axvline(0, color="0.3", lw=0.8, ls=":", zorder=0)
 
     ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=6)
+    ax.set_yticklabels(labels, fontsize=fs(-2))
     ax.invert_yaxis()
     ax.set_xlabel(r"$\gamma_{sr}$  (log EDP)")
     ax.grid(True, axis="x", alpha=0.25, lw=0.5, zorder=0)
@@ -334,7 +334,7 @@ def plot_interaction_forest(
             label=f"CI excludes 0  (n={n_excl})")
     ax.plot([], [], color=PALETTE[5], lw=2,
             label=f"CI includes 0  (n={n - n_excl})")
-    ax.legend(fontsize=7, loc="lower right")
+    ax.legend(fontsize=fs(-1), loc="lower right")
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, ax

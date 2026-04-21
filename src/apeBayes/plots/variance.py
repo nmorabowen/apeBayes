@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .helpers import ensure_dir, order_config_labels, savefig
-from .style import FULL_WIDTH, HALF_WIDTH, PALETTE, VARIANCE_COLORS
+from .style import FULL_WIDTH, HALF_WIDTH, PALETTE, VARIANCE_COLORS, fs
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -151,14 +151,14 @@ def plot_variance_budget_bars(
                 lw=0.4, label=comp, height=0.5)
         if pct > 5:
             ax.text(left + pct / 2, 0, f"{pct:.0f}%",
-                    ha="center", va="center", fontsize=7, color="white",
+                    ha="center", va="center", fontsize=fs(-1), color="white",
                     fontweight="bold")
         left += pct
 
     ax.set_xlim(0, 100)
     ax.set_xlabel("Variance share (%)")
     ax.set_yticks([])
-    ax.legend(loc="upper right", frameon=True, fontsize=7)
+    ax.legend(loc="upper right", frameon=True, fontsize=fs(-1))
     ax.set_title("Variance budget")
 
     savefig(fig, out_dir, filename, prefix=prefix)
@@ -227,10 +227,10 @@ def plot_variance_components_lollipop(
                      edgecolors="white", linewidth=0.5)
     for i in range(len(labels_s)):
         ax_sigma.text(hi_s[i] + (hi_s.max() - lo_s.min()) * 0.02, y_s[i],
-                      f"{med_s[i]:.3f}", va="center", fontsize=7, color="0.3")
+                      f"{med_s[i]:.3f}", va="center", fontsize=fs(-1), color="0.3")
 
     ax_sigma.set_yticks(y_s)
-    ax_sigma.set_yticklabels(labels_s, fontsize=7)
+    ax_sigma.set_yticklabels(labels_s, fontsize=fs(-1))
     ax_sigma.invert_yaxis()
     ax_sigma.set_xlabel("Posterior value")
     ax_sigma.set_title("Scale parameters (median + 90% CI)")
@@ -243,7 +243,7 @@ def plot_variance_components_lollipop(
         patches.append(mpatches.Patch(color=VARIANCE_COLORS["residual"],
                                       label=r"$\sigma_{\varepsilon}$"))
     if patches:
-        ax_sigma.legend(handles=patches, fontsize=7, loc="lower right")
+        ax_sigma.legend(handles=patches, fontsize=fs(-1), loc="lower right")
 
     # -- Nu panel (separate x-axis) --
     if has_nu:
@@ -260,10 +260,10 @@ def plot_variance_components_lollipop(
                       edgecolors="white", linewidth=0.5)
         for i in range(len(labels_n)):
             ax_nu.text(hi_n[i] + (hi_n.max() - lo_n.min()) * 0.05, y_n[i],
-                       f"{med_n[i]:.1f}", va="center", fontsize=7, color="0.3")
+                       f"{med_n[i]:.1f}", va="center", fontsize=fs(-1), color="0.3")
 
         ax_nu.set_yticks(y_n)
-        ax_nu.set_yticklabels(labels_n, fontsize=7)
+        ax_nu.set_yticklabels(labels_n, fontsize=fs(-1))
         ax_nu.invert_yaxis()
         ax_nu.set_xlabel("Posterior value")
         ax_nu.set_title(r"$\nu$ (DoF)")

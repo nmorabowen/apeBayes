@@ -12,7 +12,7 @@ from scipy.cluster.hierarchy import dendrogram, leaves_list, linkage, set_link_c
 from scipy.spatial.distance import squareform
 
 from .helpers import case_color, case_colors_for_labels, ensure_dir, order_config_labels, savefig
-from .style import CMAP_SEQ, FULL_WIDTH, HALF_WIDTH, PALETTE
+from .style import CMAP_SEQ, FULL_WIDTH, HALF_WIDTH, PALETTE, fs
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -112,7 +112,7 @@ def plot_equivalence_sweep(
     ax.set_xlabel(r"Threshold $\alpha$")
     ax.set_ylabel(r"$P(|\Delta\mu| < \alpha\,\sigma_{\mathrm{run}})$")
     ax.set_ylim(-0.02, 1.05)
-    ax.legend(fontsize=6, ncol=2)
+    ax.legend(fontsize=fs(-2), ncol=2)
     ax.set_title("Equivalence probability sweep")
 
     savefig(fig, out_dir, filename, prefix=prefix)
@@ -167,7 +167,7 @@ def plot_equivalence_matrix_with_dendrogram(
         ax=axes[0], leaf_font_size=7, above_threshold_color="0.5",
     )
     axes[0].invert_yaxis()
-    axes[0].set_xlabel(r"$1 - P_{\mathrm{equiv}}$", fontsize=7)
+    axes[0].set_xlabel(r"$1 - P_{\mathrm{equiv}}$", fontsize=fs(-1))
     set_link_color_palette(None)
 
     # Right panel: heatmap
@@ -366,7 +366,7 @@ def plot_equivalence_bars_plus_sweep(
         ha = "left" if p_val < 0.7 else "right"
         if p_val >= 0.7:
             x_text = p_val - 0.02
-        ax.text(x_text, y[i], annot, va="center", ha=ha, fontsize=6)
+        ax.text(x_text, y[i], annot, va="center", ha=ha, fontsize=fs(-2))
 
     ax.set_yticks(y)
     ax.set_yticklabels(labels_sorted)

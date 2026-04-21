@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .helpers import ensure_dir, savefig
-from .style import HALF_WIDTH, PALETTE
+from .style import HALF_WIDTH, PALETTE, fs
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -52,7 +52,7 @@ def plot_rhat_bar(
     ax.barh(y, x, color=colors, alpha=0.85, edgecolor="white", lw=0.3)
     ax.axvline(threshold, color="0.3", ls="--", lw=0.8)
     ax.set_yticks(y)
-    ax.set_yticklabels(df["parameter"].astype(str).values, fontsize=7)
+    ax.set_yticklabels(df["parameter"].astype(str).values, fontsize=fs(-1))
     ax.set_xlabel(r"$\hat{R}$")
     xmax = max(float(np.nanmax(x)), threshold) + 0.005
     ax.set_xlim(0.99, xmax)
@@ -100,7 +100,7 @@ def plot_ess_bar(
     ax.barh(y, x, color=colors, alpha=0.85, edgecolor="white", lw=0.3)
     ax.axvline(threshold, color="0.3", ls="--", lw=0.8)
     ax.set_yticks(y)
-    ax.set_yticklabels(df["parameter"].astype(str).values, fontsize=7)
+    ax.set_yticklabels(df["parameter"].astype(str).values, fontsize=fs(-1))
     ax.set_xlabel(f"ESS {kind}")
     ax.set_xlim(0, max(float(np.nanmax(x)), threshold) * 1.1)
     ax.set_title(f"ESS {kind} diagnostics")
