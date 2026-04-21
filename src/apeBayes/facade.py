@@ -9,6 +9,9 @@ independently usable.
 from __future__ import annotations
 
 import contextlib
+import json
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
@@ -16,7 +19,13 @@ import numpy as np
 import pandas as pd
 
 from .analysis import bias, decomposition, equivalence, fitted, validation, variance
-from .config import ModelConfig
+from .config import (
+    DecisionConfig,
+    FactorSpec,
+    ModelConfig,
+    PriorConfig,
+    SamplingConfig,
+)
 from .data import EpistemicDataset, encode_dataset
 from .diagnostics.convergence import (
     diagnostics_summary,
@@ -46,6 +55,144 @@ def _fmt(a: float) -> str:
     # Strip trailing zeros, keep at least one decimal for floats that look int
     s = f"{a:g}"
     return s
+
+
+# ── Bundle format (self-contained save/load) ──────────────────────────────
+#
+# A fitted model is persisted as a directory bundle with the ``.apebayes``
+# suffix, containing three files:
+#
+#   <name>.apebayes/
+#   ├── idata.nc       InferenceData (NetCDF)
+#   ├── config.json    ModelConfig with schema_version (see _serialize_config)
+#   └── data.parquet   Source long-format DataFrame
+#
+# Zipped bundles use the ``.apebayes.zip`` suffix and contain the same
+# three members. Legacy plain ``.nc`` save/load still works for back-compat
+# but requires the caller to supply ``df`` (and usually ``cfg``) at load
+# time, because the plain NetCDF does not carry that metadata.
+
+_BUNDLE_IDATA_NAME = "idata.nc"
+_BUNDLE_CONFIG_NAME = "config.json"
+_BUNDLE_DATA_NAME = "data.parquet"
+_BUNDLE_SUFFIX = ".apebayes"
+_BUNDLE_SCHEMA_VERSION = 1
+
+
+def _serialize_config(cfg: ModelConfig) -> dict[str, Any]:
+    """JSON-safe round-trip representation of a ``ModelConfig`` (schema v1).
+
+    Tuples (``ci``, ``alpha_ladder``, ``denominators``) are emitted as JSON
+    arrays; :func:`_deserialize_config` restores them as tuples. Literal-
+    typed fields (``likelihood``, ``sampler``) go through as plain strings
+    because the dataclass ``__post_init__`` validates them on reconstruction.
+    """
+    return {
+        "schema_version": _BUNDLE_SCHEMA_VERSION,
+        "config": {
+            "factors": [
+                {
+                    "name": f.name,
+                    "column": f.column,
+                    "levels": (list(f.levels) if f.levels is not None else None),
+                }
+                for f in cfg.factors
+            ],
+            "config_col": cfg.config_col,
+            "edp_col": cfg.edp_col,
+            "station_col": cfg.station_col,
+            "run_col": cfg.run_col,
+            "ref_config": cfg.ref_config,
+            "likelihood": cfg.likelihood,
+            "heteroskedastic": cfg.heteroskedastic,
+            "ci": list(cfg.ci),
+            "config_sep": cfg.config_sep,
+            "priors": {
+                "sigma_intercept": cfg.priors.sigma_intercept,
+                "sigma_config": cfg.priors.sigma_config,
+                "sigma_station": cfg.priors.sigma_station,
+                "sigma_src": cfg.priors.sigma_src,
+                "sigma_eps": cfg.priors.sigma_eps,
+                "nu_prior_lambda": cfg.priors.nu_prior_lambda,
+            },
+            "sampling": {
+                "draws": cfg.sampling.draws,
+                "tune": cfg.sampling.tune,
+                "chains": cfg.sampling.chains,
+                "target_accept": cfg.sampling.target_accept,
+                "max_treedepth": cfg.sampling.max_treedepth,
+                "seed": cfg.sampling.seed,
+                "sampler": cfg.sampling.sampler,
+            },
+            "decision": {
+                "alpha_eq": cfg.decision.alpha_eq,
+                "alpha_ladder": list(cfg.decision.alpha_ladder),
+                "p_star": cfg.decision.p_star,
+                "denominators": list(cfg.decision.denominators),
+            },
+        },
+    }
+
+
+def _deserialize_config(payload: dict[str, Any]) -> ModelConfig:
+    """Inverse of :func:`_serialize_config`. Raises on unknown schema_version."""
+    sv = payload.get("schema_version")
+    if sv != _BUNDLE_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unknown bundle schema_version={sv!r}; this apeBayes build "
+            f"understands schema_version={_BUNDLE_SCHEMA_VERSION}. Upgrade "
+            f"or downgrade the library to match the bundle."
+        )
+    c = payload["config"]
+    return ModelConfig(
+        factors=[
+            FactorSpec(
+                name=f["name"],
+                column=f["column"],
+                levels=(list(f["levels"]) if f.get("levels") is not None else None),
+            )
+            for f in c["factors"]
+        ],
+        config_col=c["config_col"],
+        edp_col=c["edp_col"],
+        station_col=c["station_col"],
+        run_col=c["run_col"],
+        ref_config=c["ref_config"],
+        likelihood=c["likelihood"],
+        heteroskedastic=c["heteroskedastic"],
+        ci=tuple(c["ci"]),
+        config_sep=c.get("config_sep", ""),
+        priors=PriorConfig(**c["priors"]),
+        sampling=SamplingConfig(**c["sampling"]),
+        decision=DecisionConfig(
+            alpha_eq=c["decision"]["alpha_eq"],
+            alpha_ladder=tuple(c["decision"]["alpha_ladder"]),
+            p_star=c["decision"]["p_star"],
+            denominators=tuple(c["decision"]["denominators"]),
+        ),
+    )
+
+
+def _is_zip_bundle(path: Path) -> bool:
+    """True iff the path ends in ``.apebayes.zip``."""
+    s = str(path)
+    return s.endswith(_BUNDLE_SUFFIX + ".zip")
+
+
+def _is_nc_file(path: Path) -> bool:
+    """True iff the path points to a plain ``.nc`` file (legacy format)."""
+    return path.is_file() and path.suffix == ".nc"
+
+
+def _resolve_bundle_dir_path(path: Path) -> Path:
+    """Normalise a directory-bundle save path.
+
+    - ``foo``           → ``foo.apebayes``
+    - ``foo.apebayes``  → ``foo.apebayes``  (no double-suffix)
+    """
+    if path.suffix == _BUNDLE_SUFFIX:
+        return path
+    return path.with_name(path.name + _BUNDLE_SUFFIX)
 
 
 # The 32 plot methods return some mix of plt.Figure, (Figure, Axes),
@@ -126,6 +273,11 @@ class BayesEpistemicModel:
     ) -> None:
         self.cfg = cfg or ModelConfig()
         self.name = name
+        # Retain the source DataFrame so ``.save()`` can pack it into the
+        # bundle and so downstream consumers (tests, notebooks) can reach
+        # the original frame via ``model._df`` without keeping a separate
+        # reference. EpistemicDataset only keeps the encoded arrays.
+        self._df: pd.DataFrame = df
         self.data: EpistemicDataset = encode_dataset(df, self.cfg)
         self._posterior: PosteriorAccessor | None = None
         self._builder: ModelBuilder | None = None
@@ -237,16 +389,32 @@ class BayesEpistemicModel:
     # ── Serialization ───────────────────────────────────────────────────
 
     def save(self, path: str | Path) -> Path:
-        """Save the fitted model (InferenceData + dataset metadata) to NetCDF.
+        """Save the fitted model as a self-contained bundle.
+
+        Three output formats, dispatched by the path suffix:
+
+        - ``path.apebayes/``  (**default**) — directory bundle with
+          ``idata.nc`` + ``config.json`` + ``data.parquet``. Adds the
+          ``.apebayes`` suffix automatically if absent (e.g. passing
+          ``"roof"`` writes ``roof.apebayes/``).
+        - ``path.apebayes.zip`` — same three members inside a zip archive.
+        - ``path.nc``  (**legacy**) — plain NetCDF of the posterior only.
+          ``load()`` then requires the caller to supply ``df`` and
+          ``cfg`` explicitly.
+
+        Bundles round-trip the full ``ModelConfig`` (with ``schema_version``
+        for future compat) and the source DataFrame, so
+        ``BayesEpistemicModel.load(bundle_path)`` needs nothing but the
+        path.
 
         Parameters
         ----------
         path : str or Path
-            File path (recommended extension: .nc).
+            Output path. Suffix selects the format as above.
 
         Returns
         -------
-        Path to the saved file.
+        Path to the saved bundle/file.
 
         Raises
         ------
@@ -256,20 +424,66 @@ class BayesEpistemicModel:
         path = Path(path)
         if not self.is_fitted:
             raise RuntimeError("Cannot save an unfitted model. Call fit() first.")
-        self.idata.to_netcdf(str(path))
-        return path
+
+        # Legacy NetCDF path — unchanged behaviour.
+        if path.suffix == ".nc":
+            self.idata.to_netcdf(str(path))
+            return path
+
+        # Zip bundle — build in a temp dir then zip the three members.
+        if _is_zip_bundle(path):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                self.idata.to_netcdf(str(tmp / _BUNDLE_IDATA_NAME))
+                (tmp / _BUNDLE_CONFIG_NAME).write_text(
+                    json.dumps(_serialize_config(self.cfg), indent=2),
+                    encoding="utf-8",
+                )
+                self._df.to_parquet(
+                    tmp / _BUNDLE_DATA_NAME, engine="pyarrow", compression="snappy",
+                )
+                with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for name in (
+                        _BUNDLE_IDATA_NAME, _BUNDLE_CONFIG_NAME, _BUNDLE_DATA_NAME,
+                    ):
+                        zf.write(tmp / name, arcname=name)
+            return path
+
+        # Directory bundle.
+        bundle_dir = _resolve_bundle_dir_path(path)
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        self.idata.to_netcdf(str(bundle_dir / _BUNDLE_IDATA_NAME))
+        (bundle_dir / _BUNDLE_CONFIG_NAME).write_text(
+            json.dumps(_serialize_config(self.cfg), indent=2),
+            encoding="utf-8",
+        )
+        self._df.to_parquet(
+            bundle_dir / _BUNDLE_DATA_NAME, engine="pyarrow", compression="snappy",
+        )
+        return bundle_dir
 
     @classmethod
     def load(
         cls,
         path: str | Path,
-        df: pd.DataFrame,
+        df: pd.DataFrame | None = None,
         cfg: ModelConfig | None = None,
         *,
         name: str | None = None,
         builder: ModelBuilder | None = None,
     ) -> BayesEpistemicModel:
-        """Reload a fitted model from a NetCDF file.
+        """Reload a fitted model from a bundle, zip, or legacy NetCDF.
+
+        Three accepted inputs, dispatched by what ``path`` points at:
+
+        - **Directory bundle** (``*.apebayes/``) — reads ``idata.nc`` +
+          ``config.json`` + ``data.parquet``. ``df`` and ``cfg`` are
+          auto-rehydrated; passing them as kwargs overrides the packed
+          versions (useful when migrating or tweaking ``DecisionConfig``).
+        - **Zip bundle** (``*.apebayes.zip``) — same as above, extracted
+          to a temp directory for the load.
+        - **Legacy NetCDF** (``*.nc``) — plain posterior only. Requires
+          the caller to supply ``df``; raises ``ValueError`` otherwise.
 
         The ``ModelBuilder`` is auto-detected from the posterior's variable
         set so σ_GM dispatch routes to the correct variant without user
@@ -283,17 +497,19 @@ class BayesEpistemicModel:
         Parameters
         ----------
         path : str or Path
-            Path to a .nc file saved by :meth:`save`.
-        df : pd.DataFrame
-            The *same* long-format DataFrame used to fit the model
-            (needed to reconstruct the EpistemicDataset).
+            Bundle directory, ``.apebayes.zip`` archive, or ``.nc`` file.
+        df : pd.DataFrame, optional
+            Override the bundled DataFrame. **Required** for legacy
+            ``.nc`` inputs. For bundles, omit unless you know what you
+            are doing.
         cfg : ModelConfig, optional
-            Model configuration (must match the one used for fitting).
+            Override the bundled configuration (e.g. swap in a new
+            ``DecisionConfig`` to re-interpret an old fit under a
+            different α ladder).
         name : str, optional
             Human-readable model name.
         builder : ModelBuilder, optional
-            Override the auto-detected variant. When provided, the class
-            must match what the posterior shape implies; a mismatch raises
+            Override the auto-detected variant. A mismatch raises
             ``ValueError`` rather than silently returning the wrong σ_GM.
 
         Returns
@@ -304,14 +520,70 @@ class BayesEpistemicModel:
         Raises
         ------
         ValueError
-            If ``builder`` is supplied and its variant does not match the
-            one detected from the posterior's variables.
+            - If ``path`` is a plain ``.nc`` file and ``df`` is not
+              supplied.
+            - If the bundle's ``schema_version`` is not understood.
+            - If a supplied ``builder`` disagrees with the variant
+              implied by the posterior's variables.
         """
         import arviz as az
 
         path = Path(path)
-        idata = az.from_netcdf(str(path))
-        obj = cls(df, cfg=cfg, name=name)
+
+        # Route 1 — zip bundle. Extract to a tempdir and recurse with the
+        # directory path; the tempdir is cleaned up after the model is
+        # constructed (idata is already loaded in memory by then).
+        if _is_zip_bundle(path):
+            with tempfile.TemporaryDirectory() as tmp:
+                with zipfile.ZipFile(path, "r") as zf:
+                    zf.extractall(tmp)
+                return cls.load(
+                    Path(tmp), df=df, cfg=cfg, name=name, builder=builder,
+                )
+
+        # Route 2 — legacy plain .nc. Requires df (and usually cfg).
+        if _is_nc_file(path):
+            if df is None:
+                raise ValueError(
+                    f"Legacy .nc file {path.name!r} carries no source "
+                    f"DataFrame. Pass df=... explicitly, or save the "
+                    f"model as an .apebayes bundle to round-trip df/cfg."
+                )
+            idata = az.from_netcdf(str(path))
+            obj = cls(df, cfg=cfg, name=name)
+
+        else:
+            # Route 3 — directory bundle. Path may or may not have the
+            # .apebayes suffix; we just need the three members inside.
+            if not path.is_dir():
+                raise ValueError(
+                    f"Path {path!r} is not an .apebayes directory bundle, "
+                    f"not an .apebayes.zip archive, and not a .nc file."
+                )
+            idata_file = path / _BUNDLE_IDATA_NAME
+            cfg_file = path / _BUNDLE_CONFIG_NAME
+            data_file = path / _BUNDLE_DATA_NAME
+            for member, fp in (
+                ("idata.nc", idata_file),
+                ("config.json", cfg_file),
+                ("data.parquet", data_file),
+            ):
+                if not fp.exists():
+                    raise ValueError(
+                        f"Bundle at {path!r} is missing required member "
+                        f"{member!r}."
+                    )
+
+            if cfg is None:
+                cfg = _deserialize_config(
+                    json.loads(cfg_file.read_text(encoding="utf-8")),
+                )
+            if df is None:
+                df = pd.read_parquet(data_file, engine="pyarrow")
+
+            idata = az.from_netcdf(str(idata_file))
+            obj = cls(df, cfg=cfg, name=name)
+
         post = PosteriorAccessor(idata, obj.data)
         obj._posterior = post
 
@@ -326,7 +598,7 @@ class BayesEpistemicModel:
                     f"({type(builder).__name__}) but the posterior's "
                     f"variable set implies {detected_tag}. Drop the "
                     f"builder kwarg to accept the detected variant, "
-                    f"or re-check the NetCDF file."
+                    f"or re-check the source bundle."
                 )
             obj._builder = builder
         return obj
