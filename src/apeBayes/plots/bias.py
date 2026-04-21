@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -598,16 +598,29 @@ def plot_radar_bias_probability(
     label_col: str = "Config",
     alpha: float = 0.5,
     ref: str = "4D",
+    order: Literal["tier", "case", "input"] = "tier",
     figsize: tuple[float, float] = (HALF_WIDTH, HALF_WIDTH),
     fill_alpha: float = 0.15,
     out_dir: str | Path | None = None,
     prefix: str = "",
     filename: str = "radar_bias_probability.pdf",
 ) -> tuple[plt.Figure, plt.Axes]:
-    r"""Radar (spider) chart of P(|beta| < alpha) per configuration."""
+    r"""Radar (spider) chart of P(|beta| < alpha) per configuration.
+
+    Parameters
+    ----------
+    order : {"tier", "case", "input"}, default "tier"
+        Angular sort of the spokes around the polar plot.
+
+        - ``"tier"`` — tier-major: ``1A, 1B, 1C, 1D, 2A, 2B, …`` (default).
+          Clusters all cases of each SSI tier together around the plot.
+        - ``"case"`` — case-major: ``1A, 2A, 3A, 4A, 1B, 2B, …``. Clusters
+          each nonlinearity case across tiers.
+        - ``"input"`` — keep the order as supplied in ``prob_df``.
+    """
     out_dir = ensure_dir(out_dir)
     df = prob_df[prob_df[label_col] != ref].copy()
-    labels = order_config_labels(df[label_col].astype(str).tolist())
+    labels = order_config_labels(df[label_col].astype(str).tolist(), by=order)
     df = df.set_index(label_col).loc[labels].reset_index()
 
     vals = df[prob_col].to_numpy(dtype=float)
@@ -628,7 +641,7 @@ def plot_radar_bias_probability(
     ax.set_yticks([0.25, 0.5, 0.75, 1.0])
     ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=fs(-2))
     ax.set_title(
-        rf"$P(|\beta| < {alpha}\,\sigma_{{\mathrm{{run}}}})$ vs {ref}",
+        rf"$P(|\beta| < {alpha}\,\sigma_{{\mathrm{{GM}}}})$ vs {ref}",
         pad=15, fontsize=fs(),
     )
 

@@ -1689,6 +1689,7 @@ class BayesEpistemicModel:
         self,
         *,
         alpha: float | None = None,
+        order: Literal["tier", "case", "input"] = "tier",
         fill_alpha: float = 0.15,
         figsize: tuple[float, float] = (HALF_WIDTH, HALF_WIDTH),
         out_dir: str | Path | None = None,
@@ -1697,7 +1698,24 @@ class BayesEpistemicModel:
     ) -> tuple[plt.Figure, plt.Axes]:
         """Plot radar chart of equivalence probabilities per configuration.
 
-        ``alpha`` defaults to ``cfg.decision.alpha_eq``.
+        Parameters
+        ----------
+        alpha : float, optional
+            Equivalence radius on the β scale. Defaults to
+            ``cfg.decision.alpha_eq``.
+        order : {"tier", "case", "input"}, default "tier"
+            Angular layout of the spokes around the polar plot.
+
+            - ``"tier"`` — tier-major: ``1A, 1B, 1C, 1D, 2A, 2B, …``.
+              Groups all nonlinearity cases of each SSI tier together.
+              Paper default.
+            - ``"case"`` — case-major: ``1A, 2A, 3A, 4A, 1B, 2B, …``.
+              Groups each nonlinearity case across tiers.
+            - ``"input"`` — keep the order returned by
+              :meth:`equivalence_probability_table` (sorted by P_eq).
+
+        fill_alpha, figsize, out_dir, prefix, filename
+            Standard plot / save parameters.
         """
         if alpha is None:
             alpha = self.cfg.decision.alpha_eq
@@ -1706,7 +1724,7 @@ class BayesEpistemicModel:
         return self._stamp_and_save(
             _plot(
                 equiv_df, alpha=alpha, ref=self.data.ref_label,
-                fill_alpha=fill_alpha,
+                order=order, fill_alpha=fill_alpha,
                 figsize=figsize, out_dir=None, prefix=prefix, filename=filename,
             ),
             out_dir=out_dir, prefix=prefix, filename=filename,
