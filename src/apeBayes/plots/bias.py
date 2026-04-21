@@ -19,7 +19,7 @@ from .helpers import (
     savefig,
     symmetric_bounds,
 )
-from .style import CMAP_DIV, FULL_WIDTH, HALF_WIDTH, PALETTE, fs
+from .style import AMBER, CMAP_DIV, FULL_WIDTH, HALF_WIDTH, NAVY, PALETTE, fs
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -675,6 +675,125 @@ def plot_bias_probability(
     ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.set_ylabel(f"P({threshold_label})" if threshold_label else "Probability")
     ax.set_ylim(0, 1.05)
+
+    savefig(fig, out_dir, filename, prefix=prefix)
+    return fig, ax
+
+
+# -- Epistemic Median Ratio forest plot (§6 of uncertanty_measures.md) --------
+
+def plot_epistemic_median_ratio(
+    rho_df: pd.DataFrame,
+    *,
+    sigma_GM_ref: float | None = None,
+    alpha_eq: float = 0.4,
+    alpha_severe: float = 1.1,
+    log_scale: bool = True,
+    order: Literal["tier", "case", "input"] = "tier",
+    ref_label: str | None = None,
+    label_col: str = "Config",
+    figsize: tuple[float, float] = (HALF_WIDTH, 4.5),
+    out_dir: str | Path | None = None,
+    prefix: str = "",
+    filename: str = "epistemic_median_ratio.pdf",
+) -> tuple[plt.Figure, plt.Axes]:
+    r"""Forest plot of the Epistemic Median Ratio ``ρ_epi`` — §6.
+
+    Renders one horizontal error-bar per configuration, with the α-ladder
+    from §5 imaged into log-EDP units as shaded reference bands. Log-scale
+    is the default because Δμ is approximately symmetric and configurations
+    sitting in a different physical regime (|Δμ| many log-decades away)
+    compress cleanly on this axis where they would collapse to ~10⁻⁵ on a
+    linear ρ axis — the §6.3 lever-arm regime.
+
+    Parameters
+    ----------
+    rho_df : pd.DataFrame
+        Output of :func:`apeBayes.analysis.bias.epistemic_median_ratio` or
+        :meth:`BayesEpistemicModel.epistemic_median_ratio_table`. Must
+        carry ``rho_{med,lo,hi}`` and ``dmu_{med,lo,hi}`` columns plus
+        ``Config``.
+    sigma_GM_ref : float, optional
+        A single representative σ_GM used to draw the α-ladder bands
+        (``±α · σ_GM_ref`` on the log-scale axis). Typically the posterior
+        mean of σ_GM, which is station-shared in v8. Omit to suppress the
+        bands entirely.
+    alpha_eq : float, default 0.4
+        Inner band radius in β units (``α_eq``, §5). Rendered as
+        ``±α_eq · σ_GM_ref`` on the log axis.
+    alpha_severe : float, default 1.1
+        Outer band radius in β units (top rung of the α ladder). Beyond
+        this, §6.3 says ρ_epi leads and β is lever-arm inflated.
+    log_scale : bool, default True
+        If True plot Δμ (= log ρ_epi). If False plot ρ_epi directly
+        (linear axis, α-ladder bands suppressed).
+    order : {"tier", "case", "input"}, default "tier"
+        Row ordering on the y-axis.
+    ref_label : str, optional
+        Reference configuration label. If present in ``rho_df`` it is
+        dropped (its row is identically 1 / 0 by construction).
+    label_col : str, default "Config"
+        Column name for configuration labels.
+    figsize, out_dir, prefix, filename
+        Standard figure-save quartet.
+
+    Returns
+    -------
+    fig, ax
+    """
+    out_dir = ensure_dir(out_dir)
+    df = rho_df.copy()
+    if ref_label is not None:
+        df = df[df[label_col] != ref_label]
+
+    labels = order_config_labels(df[label_col].astype(str).tolist(), by=order)
+    df = df.set_index(label_col).loc[labels].reset_index()
+
+    if log_scale:
+        med = df["dmu_med"].to_numpy(dtype=float)
+        lo = df["dmu_lo"].to_numpy(dtype=float)
+        hi = df["dmu_hi"].to_numpy(dtype=float)
+        zero = 0.0
+        xlabel = (
+            r"$\log \rho_{\mathrm{epi},(t,c)} = \Delta\mu_{t,c}$ "
+            r"(log-EDP units)"
+        )
+        ref_lbl = r"$\rho_{\mathrm{epi}} = 1$ (no bias)"
+    else:
+        med = df["rho_med"].to_numpy(dtype=float)
+        lo = df["rho_lo"].to_numpy(dtype=float)
+        hi = df["rho_hi"].to_numpy(dtype=float)
+        zero = 1.0
+        xlabel = r"$\rho_{\mathrm{epi},(t,c)}$ (EDP ratio)"
+        ref_lbl = r"$\rho_{\mathrm{epi}} = 1$ (no bias)"
+
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+    y = np.arange(len(labels))[::-1]
+
+    ax.errorbar(
+        med, y, xerr=[med - lo, hi - med],
+        fmt="o", color=NAVY, ecolor=NAVY, capsize=3, lw=1.3, ms=4,
+    )
+    ax.axvline(zero, color="0.5", lw=1.0, ls="--", label=ref_lbl, zorder=0)
+
+    # α-ladder image — only meaningful on log scale and when we have σ_GM.
+    if log_scale and sigma_GM_ref is not None:
+        ladder = [
+            (alpha_eq, rf"$\alpha_{{\mathrm{{eq}}}}={alpha_eq:g}$", ":"),
+            (alpha_severe,
+             rf"$\alpha={alpha_severe:g}$ (severe)", "-."),
+        ]
+        for a_val, lbl, ls in ladder:
+            band = a_val * sigma_GM_ref
+            ax.axvspan(-band, band, alpha=0.08, color=AMBER, zorder=0)
+            ax.axvline( band, color=AMBER, lw=0.8, ls=ls, label=lbl)
+            ax.axvline(-band, color=AMBER, lw=0.8, ls=ls)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=fs(-1))
+    ax.set_xlabel(xlabel, fontsize=fs(-1))
+    ax.legend(loc="best", fontsize=fs(-2), framealpha=0.9)
+    ax.grid(True, axis="x", alpha=0.25, lw=0.5, zorder=0)
 
     savefig(fig, out_dir, filename, prefix=prefix)
     return fig, ax

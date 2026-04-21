@@ -2639,6 +2639,158 @@ class BayesEpistemicModel:
             out_dir=out_dir, prefix=prefix, filename=filename,
         )
 
+    # ── Plots: ρ_epi & validation (§6, §7 of uncertanty_measures.md) ─────
+
+    def plot_epistemic_median_ratio(
+        self,
+        *,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+        log_scale: bool = True,
+        order: Literal["tier", "case", "input"] = "tier",
+        show_alpha_ladder: bool = True,
+        figsize: tuple[float, float] = (HALF_WIDTH, 4.5),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "epistemic_median_ratio.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
+        r"""Forest plot of the Epistemic Median Ratio ρ_epi — §6.
+
+        Physical-unit companion to :meth:`plot_standardized_bias`. Shows
+        Δμ (= log ρ_epi) per configuration with HDI whiskers, the α-ladder
+        imaged into log-EDP units as shaded reference bands, and the
+        ρ_epi = 1 reference line. Preferred visualisation when ``|Δμ|`` is
+        large (§6.3 lever-arm regime), where β's CI is inflated but
+        ρ_epi's CI stays bounded.
+
+        Parameters
+        ----------
+        ref : str, optional
+            Reference configuration label. Defaults to
+            ``self.data.ref_label``.
+        configs : list[str], optional
+            Subset of configuration labels. Defaults to all.
+        log_scale : bool, default True
+            Plot on the Δμ = log ρ_epi axis (recommended for symmetry).
+            Set False to see ρ_epi directly on a linear axis; in that
+            case the α-ladder bands are suppressed because they are a
+            log-scale construction.
+        order : {"tier", "case", "input"}, default "tier"
+            Row ordering on the y-axis.
+        show_alpha_ladder : bool, default True
+            Draw the ``±α·σ_GM`` reference bands using
+            ``cfg.decision.alpha_eq`` (inner) and
+            ``cfg.decision.alpha_ladder[-1]`` (outer) as β-unit radii,
+            multiplied by the posterior-mean σ_GM. Ignored if
+            ``log_scale=False``.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+        """
+        rho_df = self.epistemic_median_ratio_table(
+            ref=ref, configs=configs, r_band=None,
+        )
+        sigma_gm_ref = (
+            float(np.mean(self.sigma_GM_draws()))
+            if (log_scale and show_alpha_ladder) else None
+        )
+        dec = self.cfg.decision
+        # Drop the reference row (identically ρ=1, Δμ=0) from the forest.
+        ref_label = ref if ref is not None else self.data.ref_label
+        from .plots.bias import plot_epistemic_median_ratio as _plot
+        return self._stamp_and_save(
+            _plot(
+                rho_df,
+                sigma_GM_ref=sigma_gm_ref,
+                alpha_eq=dec.alpha_eq,
+                alpha_severe=dec.alpha_ladder[-1],
+                log_scale=log_scale,
+                order=order,
+                ref_label=ref_label,
+                figsize=figsize, out_dir=None, prefix=prefix, filename=filename,
+            ),
+            out_dir=out_dir, prefix=prefix, filename=filename,
+        )
+
+    def plot_validation_decision(
+        self,
+        u0: float,
+        *,
+        rule: Literal["threshold", "fractional", "ci_overlap"],
+        theta: float | None = None,
+        direction: Literal["below", "above"] = "below",
+        target: float | None = None,
+        tau_val: float | None = None,
+        target_hdi: tuple[float, float] | None = None,
+        p_star_val: float = 0.95,
+        ref: str | None = None,
+        configs: list[str] | None = None,
+        order: Literal["tier", "case", "input"] = "tier",
+        figsize: tuple[float, float] = (HALF_WIDTH, 4.5),
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "validation_decision.pdf",
+    ) -> tuple[plt.Figure, plt.Axes]:
+        r"""Forest-style validation decision plot — §7.
+
+        Renders ÊDP^med with HDI whiskers per configuration, pass/fail
+        colour coded (navy/crimson), posterior-mass ``P(rule holds)``
+        annotated per row, and a rule-specific reference element:
+
+        - ``"threshold"``  : threshold θ as a dashed line, fail side shaded.
+        - ``"fractional"`` : target as a dashed line, ±τ_val band shaded.
+        - ``"ci_overlap"`` : benchmark HDI shaded band.
+
+        ``u_0`` must be externally anchored (§7.3). ``tau_val`` and
+        ``p_star_val`` are per use case (§7.4), not tied to the paper-level
+        ``cfg.decision.alpha_eq`` / ``cfg.decision.p_star``.
+
+        Parameters
+        ----------
+        u0 : float
+            Externally anchored log-scale reference EDP for the case.
+        rule, theta, direction, target, tau_val, target_hdi, p_star_val
+            See :meth:`validation_decision_table`.
+        ref, configs
+            Reference label / subset filter passed to
+            :meth:`validation_decision_table`.
+        order : {"tier", "case", "input"}, default "tier"
+            Row ordering on the y-axis.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+        """
+        val_df = self.validation_decision_table(
+            u0=u0,
+            rule=rule,
+            theta=theta,
+            direction=direction,
+            target=target,
+            tau_val=tau_val,
+            target_hdi=target_hdi,
+            p_star_val=p_star_val,
+            ref=ref,
+            configs=configs,
+        )
+        # Drop the reference row — ÊDP^med at the reference is exactly
+        # exp(u₀) by construction, carries no validation information.
+        ref_label = ref if ref is not None else self.data.ref_label
+        from .plots.validation import plot_validation_decision as _plot
+        return self._stamp_and_save(
+            _plot(
+                val_df,
+                rule=rule,
+                theta=theta,
+                direction=direction,
+                target=target,
+                tau_val=tau_val,
+                target_hdi=target_hdi,
+                p_star_val=p_star_val,
+                order=order,
+                ref_label=ref_label,
+                figsize=figsize, out_dir=None, prefix=prefix, filename=filename,
+            ),
+            out_dir=out_dir, prefix=prefix, filename=filename,
+        )
+
     # ── Model comparison ─────────────────────────────────────────────────
 
     def compare_variants(
