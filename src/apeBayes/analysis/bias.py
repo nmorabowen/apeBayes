@@ -156,3 +156,68 @@ def bias_probability(
         "prob": p,
         "prob_label": label,
     })
+
+
+def epistemic_median_ratio(
+    mu_config: np.ndarray,
+    ref_idx: int,
+    labels: list[str],
+    ci: tuple[float, float] = (0.05, 0.95),
+    *,
+    r_band: float | None = 1.25,
+    subset_idx: np.ndarray | None = None,
+) -> pd.DataFrame:
+    r"""Epistemic Median Ratio ``ρ_epi = exp(Δμ)`` — ``uncertanty_measures.md`` §6.
+
+    Physical-unit companion to β (§6.1). Computed directly from the mean
+    structure of the posterior, without any σ_GM dependency — this is why
+    ρ_epi keeps a bounded CI in the regime where β is lever-arm inflated
+    (§6.3). ρ_epi is reported *alongside* β, not as a replacement: the
+    equivalence decision gate remains P_eq on β (§5, §8). ``r_band`` yields
+    the §6.5 post-hoc reading P(ρ_epi ∈ [1/r, r]) — available as an
+    engineering-unit equivalence summary but **not** a decision gate.
+
+    Parameters
+    ----------
+    mu_config : (S, K) array
+        Posterior draws of configuration effects on the log-EDP scale.
+    ref_idx : int
+        Index of the reference configuration.
+    labels : list[str]
+        Configuration labels of length K or ``len(subset_idx)``.
+    ci : tuple, default (0.05, 0.95)
+        Quantile CI for the ρ_epi and Δμ columns. Quantiles commute with
+        monotone transforms, so ``rho_*`` and ``exp(dmu_*)`` are identical.
+    r_band : float or None, default 1.25
+        Engineering ratio for the post-hoc P_rho column (§6.5). If ``None``,
+        the P_rho column is omitted.
+    subset_idx : (M,) int array, optional
+        Restrict output to these configuration indices.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``Config``, ``rho_{med,lo,hi}``, ``dmu_{med,lo,hi}``, and
+        ``P_rho`` if ``r_band`` is given.
+    """
+    mu_sub = mu_config[:, subset_idx] if subset_idx is not None else mu_config
+    dmu = mu_sub - mu_config[:, [ref_idx]]  # (S, M)
+    rho = np.exp(dmu)
+
+    ci_lo, ci_hi = ci
+    out = {
+        "Config": labels,
+        "rho_med": np.median(rho, axis=0),
+        "rho_lo": np.quantile(rho, ci_lo, axis=0),
+        "rho_hi": np.quantile(rho, ci_hi, axis=0),
+        "dmu_med": np.median(dmu, axis=0),
+        "dmu_lo": np.quantile(dmu, ci_lo, axis=0),
+        "dmu_hi": np.quantile(dmu, ci_hi, axis=0),
+    }
+    if r_band is not None:
+        if r_band <= 1.0:
+            raise ValueError(f"r_band must be > 1, got {r_band}")
+        inside = (rho >= 1.0 / r_band) & (rho <= r_band)
+        out["P_rho"] = np.mean(inside, axis=0)
+
+    return pd.DataFrame(out)

@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from apeBayes.analysis.bias import bias_probability, standardized_bias
+from apeBayes.analysis.bias import (
+    bias_probability,
+    epistemic_median_ratio,
+    standardized_bias,
+)
 
 
 @pytest.fixture
@@ -142,3 +146,57 @@ class TestBiasProbability:
         # Larger denominator \u2192 |\u03b2| smaller \u2192 more mass inside the band
         for i in range(1, len(labels)):
             assert df_gm.iloc[i]["prob"] >= df_src.iloc[i]["prob"]
+
+
+class TestEpistemicMedianRatio:
+    def test_shape_and_columns(self, draws):
+        mu_config, *_, labels = draws
+        df = epistemic_median_ratio(mu_config, ref_idx=0, labels=labels)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == len(labels)
+        expected = {"Config", "rho_med", "rho_lo", "rho_hi",
+                    "dmu_med", "dmu_lo", "dmu_hi", "P_rho"}
+        assert expected == set(df.columns)
+
+    def test_ref_row_is_unity(self, draws):
+        mu_config, *_, labels = draws
+        df = epistemic_median_ratio(mu_config, ref_idx=0, labels=labels)
+        ref = df.iloc[0]
+        assert abs(float(ref["rho_med"]) - 1.0) < 1e-10
+        assert abs(float(ref["dmu_med"])) < 1e-10
+        assert float(ref["P_rho"]) == 1.0
+
+    def test_no_sigma_dependency(self):
+        """\u03c1_epi must be independent of \u03c3_GM \u2014 §6.3 diagnostic property."""
+        import inspect
+        sig = inspect.signature(epistemic_median_ratio)
+        assert "sigma_denom" not in sig.parameters
+
+    def test_rho_equals_exp_dmu(self, draws):
+        """rho ≈ exp(dmu); the two medians are not bit-identical because
+        np.median averages the two middle values when n is even, but they
+        agree to machine-quantile precision."""
+        mu_config, *_, labels = draws
+        df = epistemic_median_ratio(mu_config, ref_idx=0, labels=labels)
+        np.testing.assert_allclose(
+            df["rho_med"].to_numpy(), np.exp(df["dmu_med"].to_numpy()),
+            rtol=1e-5,
+        )
+
+    def test_r_band_omits_p_rho(self, draws):
+        mu_config, *_, labels = draws
+        df = epistemic_median_ratio(mu_config, ref_idx=0, labels=labels, r_band=None)
+        assert "P_rho" not in df.columns
+
+    def test_r_band_must_exceed_one(self, draws):
+        mu_config, *_, labels = draws
+        with pytest.raises(ValueError, match="r_band"):
+            epistemic_median_ratio(mu_config, ref_idx=0, labels=labels, r_band=1.0)
+
+    def test_subset(self, draws):
+        mu_config, *_ = draws
+        subset_idx = np.array([0, 2])
+        df = epistemic_median_ratio(
+            mu_config, ref_idx=0, labels=["1A", "2A"], subset_idx=subset_idx,
+        )
+        assert len(df) == 2
