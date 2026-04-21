@@ -1826,6 +1826,66 @@ class BayesEpistemicModel:
             out_dir=out_dir, prefix=prefix, filename=filename,
         )
 
+    def plot_equivalence_matrix_comparison(
+        self,
+        *,
+        alpha: float | None = None,
+        orders: tuple[str, ...] | list[str] = ("similarity", "tier", "case"),
+        method: str = "average",
+        annot: bool = False,
+        fmt: str = ".2f",
+        cmap: str = CMAP_SEQ,
+        figsize: tuple[float, float] | None = None,
+        out_dir: str | Path | None = None,
+        prefix: str = "",
+        filename: str = "equivalence_matrix_comparison.pdf",
+    ) -> tuple[plt.Figure, np.ndarray, dict[str, pd.DataFrame]]:
+        r"""Side-by-side equivalence heatmaps under different label orderings.
+
+        Renders one panel per ordering in ``orders``, sharing a single
+        colourbar. Supported orderings are ``"similarity"`` (hierarchical
+        clustering), ``"tier"`` (1A, 1B, …, 2A, …), and ``"case"``
+        (1A, 2A, …, 1B, …). Useful for side-by-side comparison of how
+        different sort orders expose clusters in the same P_eq matrix.
+
+        Parameters
+        ----------
+        alpha : float, optional
+            Equivalence radius. Defaults to ``cfg.decision.alpha_eq``.
+        orders : sequence of {"similarity", "tier", "case"}
+            One panel per entry.
+        method : str, default "average"
+            Linkage method for ``"similarity"`` ordering.
+        annot : bool, default False
+            Annotate each cell with its P_eq value.
+        fmt : str, default ".2f"
+            Annotation format spec.
+        cmap : str, default ``CMAP_SEQ``
+            Heatmap colormap.
+        figsize, out_dir, prefix, filename
+            Standard figure-save quartet.
+
+        Returns
+        -------
+        fig, axes, P_dfs
+            ``P_dfs`` maps each ordering key to the reordered DataFrame.
+        """
+        if alpha is None:
+            alpha = self.cfg.decision.alpha_eq
+        labels, P_mat = self.epistemic_equivalence_matrix(alpha=alpha)
+        from .plots.equivalence import (
+            plot_equivalence_matrix_comparison as _plot,
+        )
+        return self._stamp_and_save(
+            _plot(
+                labels, P_mat, alpha=alpha,
+                orders=orders, method=method,
+                annot=annot, fmt=fmt, cmap=cmap,
+                figsize=figsize, out_dir=None, prefix=prefix, filename=filename,
+            ),
+            out_dir=out_dir, prefix=prefix, filename=filename,
+        )
+
     def plot_equivalence_dendrogram(
         self,
         *,
