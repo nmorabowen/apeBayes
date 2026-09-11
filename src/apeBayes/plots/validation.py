@@ -17,13 +17,14 @@ from typing import TYPE_CHECKING, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 from .helpers import ensure_dir, order_config_labels, savefig
 from .style import CHARCOAL, HALF_WIDTH, NAVY, PALETTE, TEAL, fs
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pandas as pd
 
 
 # Accent colour for "fail" rows; complements NAVY (pass) without being
@@ -124,7 +125,7 @@ def plot_validation_decision(
     row_colors = [NAVY if d == "pass" else _FAIL_COLOR for d in decisions]
 
     # Error bars, one at a time so each picks up its own colour.
-    for med_i, lo_i, hi_i, y_i, c in zip(med, lo, hi, y, row_colors):
+    for med_i, lo_i, hi_i, y_i, c in zip(med, lo, hi, y, row_colors, strict=True):
         ax.errorbar(
             [med_i], [y_i],
             xerr=[[med_i - lo_i], [hi_i - med_i]],
@@ -179,7 +180,7 @@ def plot_validation_decision(
     # Posterior-mass annotations on the right edge.
     xmax = ax.get_xlim()[1]
     xspan = xmax - ax.get_xlim()[0]
-    for y_i, m_i, d_i in zip(y, mass, decisions):
+    for y_i, m_i, d_i in zip(y, mass, decisions, strict=True):
         ax.text(
             xmax + 0.02 * xspan, y_i, f"P={m_i:.2f}",
             va="center", ha="left", fontsize=fs(-2),

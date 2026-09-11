@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from apeBayes.config import ModelConfig, FactorSpec
+from apeBayes.config import FactorSpec, ModelConfig
 from apeBayes.data import EpistemicDataset, encode_dataset
 
 

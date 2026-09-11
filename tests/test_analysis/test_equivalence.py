@@ -9,11 +9,11 @@ import pandas as pd
 import pytest
 
 from apeBayes.analysis.equivalence import (
-    equivalence_probability,
-    equivalence_sweep,
+    epistemic_clusters,
     epistemic_distance_matrix,
     epistemic_equivalence_matrix,
-    epistemic_clusters,
+    equivalence_probability,
+    equivalence_sweep,
 )
 
 

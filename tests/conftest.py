@@ -12,10 +12,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from apeBayes.config import ModelConfig, FactorSpec, PriorConfig, SamplingConfig
+from apeBayes.config import FactorSpec, ModelConfig, PriorConfig, SamplingConfig
 from apeBayes.data import encode_dataset
 from apeBayes.posterior import PosteriorAccessor
-
 
 # ── Constants ───────────────────────────────────────────────────────────
 
@@ -61,7 +60,7 @@ def synthetic_long_df(rng: np.random.Generator) -> pd.DataFrame:
         tier = cfg[0]       # keep as string to match FactorSpec levels
         case = cfg[1]
         for j, sta in enumerate(stations):
-            for r in range(N_RUNS):
+            for _r in range(N_RUNS):
                 b_run_val = rng.normal(0, sigma_run)
                 eps = rng.normal(0, sigma_eps)
                 y = mu0 + mu_config[k] + delta_st[j] + b_run_val + eps

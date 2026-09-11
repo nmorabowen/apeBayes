@@ -146,10 +146,7 @@ def plot_equivalence_matrix_with_dendrogram(
     condensed = squareform(D, checks=False)
     Z = linkage(condensed, method=method)
 
-    if cluster_order:
-        order = leaves_list(Z)
-    else:
-        order = np.arange(len(labels))
+    order = leaves_list(Z) if cluster_order else np.arange(len(labels))
 
     reordered_labels = [labels[i] for i in order]
     reordered_P = prob_matrix[np.ix_(order, order)]
@@ -246,7 +243,7 @@ def plot_equivalence_matrix_comparison(
 
     cbar_label = rf"$P(|\Delta\mu| \leq {alpha:g}\,\sigma_{{\mathrm{{run}}}})$"
 
-    def _reorder(order_key: str):
+    def _reorder(order_key: str) -> tuple[list[str], np.ndarray]:
         """Return (reordered_labels, reordered_P)."""
         labs = list(labels)
         P = np.asarray(prob_matrix, dtype=float).copy()
@@ -259,7 +256,9 @@ def plot_equivalence_matrix_comparison(
             Z = linkage(condensed, method=method)
             idx = leaves_list(Z)
         elif order_key in {"tier", "case"}:
-            sorted_labs = order_config_labels(labs, by=order_key)
+            sorted_labs = order_config_labels(
+                labs, by="tier" if order_key == "tier" else "case",
+            )
             pos = {lab: i for i, lab in enumerate(labs)}
             idx = [pos[lab] for lab in sorted_labs]
         else:

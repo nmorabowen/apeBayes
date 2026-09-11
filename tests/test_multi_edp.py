@@ -9,11 +9,9 @@ No MCMC sampling is performed; we test the wiring, not the inference.
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 import pytest
 
-from apeBayes import MultiEDPModel, EDPSpec, ModelConfig, FactorSpec
-from apeBayes.config import SamplingConfig, PriorConfig
+from apeBayes import EDPSpec, MultiEDPModel
 
 
 class TestEDPSpec:

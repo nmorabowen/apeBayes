@@ -7,8 +7,8 @@ with the expected free random variables, deterministics, and observed data.
 
 from __future__ import annotations
 
-import pytest
 import pymc as pm
+import pytest
 
 from apeBayes.data import encode_dataset
 from apeBayes.model.flat import FlatConfigModel

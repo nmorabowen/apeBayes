@@ -21,8 +21,6 @@ from apeBayes.config import (
     DecisionConfig,
     FactorSpec,
     ModelConfig,
-    PriorConfig,
-    SamplingConfig,
 )
 from apeBayes.facade import (
     _BUNDLE_CONFIG_NAME,

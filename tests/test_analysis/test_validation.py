@@ -33,7 +33,7 @@ class TestValidationParameter:
     def test_ref_row_equals_exp_u0(self, draws):
         mu_config, labels = draws
         u0 = np.log(0.01)
-        edp, summary = validation_parameter(
+        _edp, summary = validation_parameter(
             mu_config, u0=u0, ref_idx=0, labels=labels,
         )
         # Reference config draws differ only by the tiny zero-centred noise

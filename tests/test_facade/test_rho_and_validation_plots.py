@@ -3,6 +3,7 @@ plot_validation_decision (§7 of uncertanty_measures.md)."""
 from __future__ import annotations
 
 import matplotlib
+
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt

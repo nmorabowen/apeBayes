@@ -30,8 +30,8 @@ class TestAxiswiseDecomposition:
         f1 = [chr(ord("A") + j) for j in range(J)]
         grid = {}
         idx = 0
-        for i, a in enumerate(f0):
-            for j, b in enumerate(f1):
+        for a in f0:
+            for b in f1:
                 grid[(a, b)] = idx
                 idx += 1
 

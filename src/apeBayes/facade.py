@@ -174,14 +174,33 @@ def _deserialize_config(payload: dict[str, Any]) -> ModelConfig:
 
 
 def _is_zip_bundle(path: Path) -> bool:
-    """True iff the path ends in ``.apebayes.zip``."""
+    """Return True iff the path ends in ``.apebayes.zip``."""
     s = str(path)
     return s.endswith(_BUNDLE_SUFFIX + ".zip")
 
 
 def _is_nc_file(path: Path) -> bool:
-    """True iff the path points to a plain ``.nc`` file (legacy format)."""
+    """Return True iff the path points to a plain ``.nc`` file (legacy format)."""
     return path.is_file() and path.suffix == ".nc"
+
+
+def _read_idata_eager(path: Path) -> InferenceData:
+    """Read a NetCDF posterior fully into memory and release the file.
+
+    ``arviz.from_netcdf`` opens the file lazily, so the OS handle stays
+    open for as long as the InferenceData lives. That keeps a temp
+    directory from being deleted on Windows (zip bundles) and pins a
+    file on a synced store (SeaDrive, Dropbox). Loading every group and
+    closing the datasets returns an in-memory object with no handle.
+    """
+    import arviz as az
+
+    idata: InferenceData = az.from_netcdf(str(path))
+    for group in idata.groups():
+        ds = idata[group]
+        ds.load()
+        ds.close()
+    return idata
 
 
 def _resolve_bundle_dir_path(path: Path) -> Path:
@@ -432,8 +451,8 @@ class BayesEpistemicModel:
 
         # Zip bundle — build in a temp dir then zip the three members.
         if _is_zip_bundle(path):
-            with tempfile.TemporaryDirectory() as tmp:
-                tmp = Path(tmp)
+            with tempfile.TemporaryDirectory() as tmp_str:
+                tmp = Path(tmp_str)
                 self.idata.to_netcdf(str(tmp / _BUNDLE_IDATA_NAME))
                 (tmp / _BUNDLE_CONFIG_NAME).write_text(
                     json.dumps(_serialize_config(self.cfg), indent=2),
@@ -526,13 +545,12 @@ class BayesEpistemicModel:
             - If a supplied ``builder`` disagrees with the variant
               implied by the posterior's variables.
         """
-        import arviz as az
-
         path = Path(path)
 
         # Route 1 — zip bundle. Extract to a tempdir and recurse with the
         # directory path; the tempdir is cleaned up after the model is
-        # constructed (idata is already loaded in memory by then).
+        # constructed. ``_read_idata_eager`` guarantees the posterior is
+        # in memory and the NetCDF handle closed before that happens.
         if _is_zip_bundle(path):
             with tempfile.TemporaryDirectory() as tmp:
                 with zipfile.ZipFile(path, "r") as zf:
@@ -549,7 +567,7 @@ class BayesEpistemicModel:
                     f"DataFrame. Pass df=... explicitly, or save the "
                     f"model as an .apebayes bundle to round-trip df/cfg."
                 )
-            idata = az.from_netcdf(str(path))
+            idata = _read_idata_eager(path)
             obj = cls(df, cfg=cfg, name=name)
 
         else:
@@ -579,9 +597,9 @@ class BayesEpistemicModel:
                     json.loads(cfg_file.read_text(encoding="utf-8")),
                 )
             if df is None:
-                df = pd.read_parquet(data_file, engine="pyarrow")
+                df = pd.read_parquet(data_file)
 
-            idata = az.from_netcdf(str(idata_file))
+            idata = _read_idata_eager(idata_file)
             obj = cls(df, cfg=cfg, name=name)
 
         post = PosteriorAccessor(idata, obj.data)
