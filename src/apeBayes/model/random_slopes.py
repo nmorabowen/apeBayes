@@ -35,7 +35,7 @@ Run parameterization:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pymc as pm
@@ -65,6 +65,15 @@ class RandomSlopesModel:
         Override ``cfg.likelihood`` if provided.
     heteroskedastic : bool, optional
         Override ``cfg.heteroskedastic`` if provided.
+    residual_pooling : {"none", "partial"}
+        Controls how the per-Config residual scales ``sigma_eps_config``
+        are modeled when ``hetero`` is True. "none" (default) keeps the
+        existing free ``HalfNormal`` on each Config's scale independently.
+        "partial" instead places a partially-pooled prior on the log
+        scales (log_sigma_eps_bar, tau_sigma_eps, z_sigma_eps), which
+        prevents an individual Config's scale from collapsing to zero
+        when the shared random effects absorb that Config's noise. Ignored when ``hetero`` is
+        False. Default "none" (backward compatible).
     """
 
     def __init__(
@@ -74,13 +83,19 @@ class RandomSlopesModel:
         centered_runs: bool = False,
         likelihood: str | None = None,
         heteroskedastic: bool | None = None,
+        residual_pooling: Literal["none", "partial"] = "none",
     ) -> None:
         if sigma_lambda <= 0:
             raise ValueError(f"sigma_lambda must be positive, got {sigma_lambda}")
+        if residual_pooling not in ("none", "partial"):
+            raise ValueError(
+                f"residual_pooling must be 'none' or 'partial', got {residual_pooling!r}"
+            )
         self._sigma_lambda = sigma_lambda
         self._centered_runs = centered_runs
         self._likelihood_override = likelihood
         self._hetero_override = heteroskedastic
+        self._residual_pooling = residual_pooling
 
     @property
     def description(self) -> str:
@@ -94,6 +109,8 @@ class RandomSlopesModel:
             parts.append(lik)
         if het is not None:
             parts.append("hetero" if het else "homo")
+        if self._residual_pooling == "partial":
+            parts.append("residual_pooling=partial")
         return f"RandomSlopes({', '.join(parts)})"
 
     def sigma_GM(self, post: PosteriorAccessor) -> np.ndarray:
@@ -319,11 +336,25 @@ class RandomSlopesModel:
 
             # ── Residual SD ──────────────────────────────────────────────
             if hetero:
-                sigma_eps_config = pm.HalfNormal(
-                    "sigma_eps_config",
-                    sigma=p.sigma_eps,
-                    dims="Config",
-                )
+                if self._residual_pooling == "partial":
+                    log_sigma_eps_bar = pm.Normal(
+                        "log_sigma_eps_bar", mu=np.log(0.1), sigma=1.5
+                    )
+                    tau_sigma_eps = pm.HalfNormal("tau_sigma_eps", sigma=0.5)
+                    z_sigma_eps = pm.Normal(
+                        "z_sigma_eps", mu=0.0, sigma=1.0, dims="Config"
+                    )
+                    sigma_eps_config = pm.Deterministic(
+                        "sigma_eps_config",
+                        pm.math.exp(log_sigma_eps_bar + tau_sigma_eps * z_sigma_eps),
+                        dims="Config",
+                    )
+                else:
+                    sigma_eps_config = pm.HalfNormal(
+                        "sigma_eps_config",
+                        sigma=p.sigma_eps,
+                        dims="Config",
+                    )
                 sigma_obs = sigma_eps_config[data.config_idx]
             else:
                 sigma_eps = pm.HalfNormal("sigma_eps", sigma=p.sigma_eps)

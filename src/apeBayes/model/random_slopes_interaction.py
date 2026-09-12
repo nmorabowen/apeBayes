@@ -44,7 +44,7 @@ Implementation:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pymc as pm
@@ -77,6 +77,15 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
     sigma_xi : float
         Prior SD for log(ξ_case). Default 0.5. Only used when
         interaction_loading=True.
+    residual_pooling : {"none", "partial"}
+        Controls how the per-Config residual scales ``sigma_eps_config``
+        are modeled when ``hetero`` is True. "none" (default) keeps the
+        existing free ``HalfNormal`` on each Config's scale independently.
+        "partial" instead places a partially-pooled prior on the log
+        scales (log_sigma_eps_bar, tau_sigma_eps, z_sigma_eps), which
+        prevents an individual Config's scale from collapsing to zero
+        when the shared random effects absorb that Config's noise. Ignored when ``hetero`` is
+        False. Default "none" (backward compatible).
     """
 
     def __init__(
@@ -89,12 +98,14 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         heteroskedastic: bool | None = None,
         interaction_loading: bool = False,
         sigma_xi: float = 0.5,
+        residual_pooling: Literal["none", "partial"] = "none",
     ) -> None:
         super().__init__(
             sigma_lambda=sigma_lambda,
             centered_runs=centered_runs,
             likelihood=likelihood,
             heteroskedastic=heteroskedastic,
+            residual_pooling=residual_pooling,
         )
         self._sigma_inter = sigma_inter
         self._interaction_loading = interaction_loading
@@ -318,9 +329,23 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
 
             # ── Residual SD ──────────────────────────────────────────────
             if hetero:
-                sigma_eps_config = pm.HalfNormal(
-                    "sigma_eps_config", sigma=p.sigma_eps, dims="Config",
-                )
+                if self._residual_pooling == "partial":
+                    log_sigma_eps_bar = pm.Normal(
+                        "log_sigma_eps_bar", mu=np.log(0.1), sigma=1.5
+                    )
+                    tau_sigma_eps = pm.HalfNormal("tau_sigma_eps", sigma=0.5)
+                    z_sigma_eps = pm.Normal(
+                        "z_sigma_eps", mu=0.0, sigma=1.0, dims="Config"
+                    )
+                    sigma_eps_config = pm.Deterministic(
+                        "sigma_eps_config",
+                        pm.math.exp(log_sigma_eps_bar + tau_sigma_eps * z_sigma_eps),
+                        dims="Config",
+                    )
+                else:
+                    sigma_eps_config = pm.HalfNormal(
+                        "sigma_eps_config", sigma=p.sigma_eps, dims="Config",
+                    )
                 sigma_obs = sigma_eps_config[data.config_idx]
             else:
                 sigma_eps = pm.HalfNormal("sigma_eps", sigma=p.sigma_eps)

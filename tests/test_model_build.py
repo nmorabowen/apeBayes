@@ -12,6 +12,8 @@ import pytest
 
 from apeBayes.data import encode_dataset
 from apeBayes.model.flat import FlatConfigModel
+from apeBayes.model.random_slopes import RandomSlopesModel
+from apeBayes.model.random_slopes_interaction import RandomSlopesInteractionModel
 
 
 class TestFlatConfigModelBuild:
@@ -73,3 +75,78 @@ class TestFlatConfigModelBuild:
         b2 = FlatConfigModel(likelihood="gaussian", heteroskedastic=False)
         assert "gaussian" in b2.description
         assert "homo" in b2.description
+
+
+_POOLED_RV_NAMES = {"log_sigma_eps_bar", "tau_sigma_eps", "z_sigma_eps"}
+
+
+class TestResidualPooling:
+    """residual_pooling='partial' on RandomSlopesModel / RandomSlopesInteractionModel.
+
+    Verifies the opt-in partially-pooled prior on the heteroskedastic
+    residual scales builds the expected variables, that the default
+    ("none") path is unchanged, and that an invalid value is rejected.
+    """
+
+    @pytest.fixture()
+    def dataset(self, synthetic_long_df, fast_config):
+        return encode_dataset(synthetic_long_df, fast_config)
+
+    def test_random_slopes_partial_pooling_has_expected_vars(self, dataset, fast_config):
+        builder = RandomSlopesModel(residual_pooling="partial")
+        model = builder.build(dataset, fast_config)
+        rv_names = {rv.name for rv in model.free_RVs}
+        det_names = {det.name for det in model.deterministics}
+        assert rv_names >= _POOLED_RV_NAMES
+        assert "sigma_eps_config" not in rv_names
+        assert "sigma_eps_config" in det_names
+        sigma_eps_config = model["sigma_eps_config"]
+        assert model.named_vars_to_dims[sigma_eps_config.name] == ("Config",)
+
+    def test_random_slopes_interaction_partial_pooling_has_expected_vars(
+        self, dataset, fast_config
+    ):
+        builder = RandomSlopesInteractionModel(residual_pooling="partial")
+        model = builder.build(dataset, fast_config)
+        rv_names = {rv.name for rv in model.free_RVs}
+        det_names = {det.name for det in model.deterministics}
+        assert rv_names >= _POOLED_RV_NAMES
+        assert "sigma_eps_config" not in rv_names
+        assert "sigma_eps_config" in det_names
+        sigma_eps_config = model["sigma_eps_config"]
+        assert model.named_vars_to_dims[sigma_eps_config.name] == ("Config",)
+
+    def test_random_slopes_default_pooling_is_none(self, dataset, fast_config):
+        builder = RandomSlopesModel()
+        model = builder.build(dataset, fast_config)
+        rv_names = {rv.name for rv in model.free_RVs}
+        det_names = {det.name for det in model.deterministics}
+        assert _POOLED_RV_NAMES.isdisjoint(rv_names)
+        assert _POOLED_RV_NAMES.isdisjoint(det_names)
+        assert "sigma_eps_config" in rv_names
+        assert "sigma_eps_config" not in det_names
+
+    def test_random_slopes_interaction_default_pooling_is_none(self, dataset, fast_config):
+        builder = RandomSlopesInteractionModel()
+        model = builder.build(dataset, fast_config)
+        rv_names = {rv.name for rv in model.free_RVs}
+        det_names = {det.name for det in model.deterministics}
+        assert _POOLED_RV_NAMES.isdisjoint(rv_names)
+        assert _POOLED_RV_NAMES.isdisjoint(det_names)
+        assert "sigma_eps_config" in rv_names
+        assert "sigma_eps_config" not in det_names
+
+    def test_random_slopes_invalid_residual_pooling_raises(self):
+        with pytest.raises(ValueError, match="residual_pooling"):
+            RandomSlopesModel(residual_pooling="bogus")  # type: ignore[arg-type]
+
+    def test_random_slopes_interaction_invalid_residual_pooling_raises(self):
+        with pytest.raises(ValueError, match="residual_pooling"):
+            RandomSlopesInteractionModel(residual_pooling="bogus")  # type: ignore[arg-type]
+
+    def test_description_mentions_residual_pooling(self):
+        builder = RandomSlopesModel(residual_pooling="partial")
+        assert "residual_pooling=partial" in builder.description
+        inter_builder = RandomSlopesInteractionModel(residual_pooling="partial")
+        assert "residual_pooling=partial" in inter_builder.description
+        assert "residual_pooling=partial" not in RandomSlopesModel().description
