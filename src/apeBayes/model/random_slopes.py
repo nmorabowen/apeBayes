@@ -72,7 +72,7 @@ class RandomSlopesModel:
         "partial" instead places a partially-pooled prior on the log
         scales (log_sigma_eps_bar, tau_sigma_eps, z_sigma_eps), which
         prevents an individual Config's scale from collapsing to zero
-        when data are sparse for that Config. Ignored when ``hetero`` is
+        when the shared random effects absorb that Config's noise. Ignored when ``hetero`` is
         False. Default "none" (backward compatible).
     """
 
