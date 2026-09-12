@@ -27,9 +27,12 @@ structure is modeled explicitly, and how is the residual scale handled."
   effects (`gamma_sr`, `b_run`) absorb one configuration's noise, which
   starves that configuration's residual of the signal needed to estimate its
   own scale. The partially pooled prior lets configurations borrow strength
-  from each other instead. Where v8 already converges cleanly, v8.1
-  reproduces the same estimates; it changes behavior only for the
-  configurations where v8's independent scales were poorly identified.
+  from each other instead. The pooling strength is set by the prior on
+  `tau_sigma_eps` (HalfNormal(0.5)) and is provisional: on the San Ramon
+  data it left the drift EDPs unchanged but shrank the residual scales of
+  the floor-acceleration EDPs toward a common value, moving `sigma_GM` by
+  about a quarter where heteroskedasticity is real. Check `sigma_GM`
+  against the free-scale fit before adopting it for an EDP.
 - **v9** — `RandomSlopesInteractionModel(interaction_loading=True)`.
   Experimental. Adds a per-Case loading `xi_case` on the station × rupture
   interaction `gamma_sr`, analogous to how `lambda_case` loads the rupture
