@@ -1,7 +1,7 @@
 """MCMC convergence diagnostics and model validation."""
 
 from .convergence import diagnostics_summary, divergences_count, ess_table, rhat_table
-from .validation import posterior_predictive_check
+from .validation import posterior_predictive_check, separability_check
 
 __all__ = [
     "diagnostics_summary",
@@ -9,4 +9,5 @@ __all__ = [
     "ess_table",
     "posterior_predictive_check",
     "rhat_table",
+    "separability_check",
 ]

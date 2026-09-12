@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from .config import DecisionConfig, FactorSpec, ModelConfig, PriorConfig, SamplingConfig
 from .data import EpistemicDataset, encode_dataset
+from .diagnostics import separability_check
 from .facade import BayesEpistemicModel
 from .model import (
     FlatConfigModel,
@@ -51,6 +52,7 @@ __all__ = [
     "compare_models",
     "encode_dataset",
     "sample_model",
+    "separability_check",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
