@@ -86,6 +86,17 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         prevents an individual Config's scale from collapsing to zero
         when the shared random effects absorb that Config's noise. Ignored when ``hetero`` is
         False. Default "none" (backward compatible).
+    residual_tau : float
+        Spread hyperparameter for the pooled residual-scale prior
+        (``tau_sigma_eps``) when ``residual_pooling="partial"``. Must be
+        positive. Default 0.5, which reproduces the v8.1 prior exactly.
+        Ignored when ``residual_pooling != "partial"``.
+    residual_tau_dist : {"halfnormal", "halfcauchy"}
+        Distribution family for ``tau_sigma_eps`` when
+        ``residual_pooling="partial"``. "halfnormal" (default) uses
+        ``HalfNormal(sigma=residual_tau)``; "halfcauchy" uses
+        ``HalfCauchy(beta=residual_tau)`` for a heavier-tailed prior.
+        Ignored when ``residual_pooling != "partial"``.
     """
 
     def __init__(
@@ -99,6 +110,8 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         interaction_loading: bool = False,
         sigma_xi: float = 0.5,
         residual_pooling: Literal["none", "partial"] = "none",
+        residual_tau: float = 0.5,
+        residual_tau_dist: Literal["halfnormal", "halfcauchy"] = "halfnormal",
     ) -> None:
         super().__init__(
             sigma_lambda=sigma_lambda,
@@ -106,6 +119,8 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
             likelihood=likelihood,
             heteroskedastic=heteroskedastic,
             residual_pooling=residual_pooling,
+            residual_tau=residual_tau,
+            residual_tau_dist=residual_tau_dist,
         )
         self._sigma_inter = sigma_inter
         self._interaction_loading = interaction_loading
@@ -333,7 +348,14 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
                     log_sigma_eps_bar = pm.Normal(
                         "log_sigma_eps_bar", mu=np.log(0.1), sigma=1.5
                     )
-                    tau_sigma_eps = pm.HalfNormal("tau_sigma_eps", sigma=0.5)
+                    if self._residual_tau_dist == "halfcauchy":
+                        tau_sigma_eps = pm.HalfCauchy(
+                            "tau_sigma_eps", beta=self._residual_tau
+                        )
+                    else:
+                        tau_sigma_eps = pm.HalfNormal(
+                            "tau_sigma_eps", sigma=self._residual_tau
+                        )
                     z_sigma_eps = pm.Normal(
                         "z_sigma_eps", mu=0.0, sigma=1.0, dims="Config"
                     )

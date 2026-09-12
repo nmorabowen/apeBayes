@@ -150,3 +150,35 @@ class TestResidualPooling:
         inter_builder = RandomSlopesInteractionModel(residual_pooling="partial")
         assert "residual_pooling=partial" in inter_builder.description
         assert "residual_pooling=partial" not in RandomSlopesModel().description
+
+    def test_interaction_partial_pooling_custom_tau_is_halfnormal(self, dataset, fast_config):
+        builder = RandomSlopesInteractionModel(residual_pooling="partial", residual_tau=1.5)
+        model = builder.build(dataset, fast_config)
+        op_class_name = type(model["tau_sigma_eps"].owner.op).__name__
+        assert "HalfNormal" in op_class_name
+
+    def test_interaction_partial_pooling_halfcauchy(self, dataset, fast_config):
+        builder = RandomSlopesInteractionModel(
+            residual_pooling="partial", residual_tau=1.5, residual_tau_dist="halfcauchy"
+        )
+        model = builder.build(dataset, fast_config)
+        op_class_name = type(model["tau_sigma_eps"].owner.op).__name__
+        assert "HalfCauchy" in op_class_name
+
+    def test_invalid_residual_tau_raises(self):
+        with pytest.raises(ValueError, match="residual_tau"):
+            RandomSlopesModel(residual_tau=0)
+        with pytest.raises(ValueError, match="residual_tau"):
+            RandomSlopesInteractionModel(residual_tau=0)
+
+    def test_invalid_residual_tau_dist_raises(self):
+        with pytest.raises(ValueError, match="residual_tau_dist"):
+            RandomSlopesModel(residual_tau_dist="bogus")  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="residual_tau_dist"):
+            RandomSlopesInteractionModel(residual_tau_dist="bogus")  # type: ignore[arg-type]
+
+    def test_description_mentions_default_residual_tau(self):
+        builder = RandomSlopesModel(residual_pooling="partial")
+        assert "tau~HalfNormal(0.5)" in builder.description
+        inter_builder = RandomSlopesInteractionModel(residual_pooling="partial")
+        assert "tau~HalfNormal(0.5)" in inter_builder.description

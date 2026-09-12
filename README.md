@@ -32,7 +32,9 @@ structure is modeled explicitly, and how is the residual scale handled."
   data it left the drift EDPs unchanged but shrank the residual scales of
   the floor-acceleration EDPs toward a common value, moving `sigma_GM` by
   about a quarter where heteroskedasticity is real. Check `sigma_GM`
-  against the free-scale fit before adopting it for an EDP.
+  against the free-scale fit before adopting it for an EDP. The spread
+  prior itself is configurable via `residual_tau` / `residual_tau_dist`
+  on the constructor (default HalfNormal(0.5), which is v8.1 as released).
 - **v9** — `RandomSlopesInteractionModel(interaction_loading=True)`.
   Experimental. Adds a per-Case loading `xi_case` on the station × rupture
   interaction `gamma_sr`, analogous to how `lambda_case` loads the rupture

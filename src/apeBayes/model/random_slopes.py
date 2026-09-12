@@ -74,6 +74,17 @@ class RandomSlopesModel:
         prevents an individual Config's scale from collapsing to zero
         when the shared random effects absorb that Config's noise. Ignored when ``hetero`` is
         False. Default "none" (backward compatible).
+    residual_tau : float
+        Spread hyperparameter for the pooled residual-scale prior
+        (``tau_sigma_eps``) when ``residual_pooling="partial"``. Must be
+        positive. Default 0.5, which reproduces the v8.1 prior exactly.
+        Ignored when ``residual_pooling != "partial"``.
+    residual_tau_dist : {"halfnormal", "halfcauchy"}
+        Distribution family for ``tau_sigma_eps`` when
+        ``residual_pooling="partial"``. "halfnormal" (default) uses
+        ``HalfNormal(sigma=residual_tau)``; "halfcauchy" uses
+        ``HalfCauchy(beta=residual_tau)`` for a heavier-tailed prior.
+        Ignored when ``residual_pooling != "partial"``.
     """
 
     def __init__(
@@ -84,6 +95,8 @@ class RandomSlopesModel:
         likelihood: str | None = None,
         heteroskedastic: bool | None = None,
         residual_pooling: Literal["none", "partial"] = "none",
+        residual_tau: float = 0.5,
+        residual_tau_dist: Literal["halfnormal", "halfcauchy"] = "halfnormal",
     ) -> None:
         if sigma_lambda <= 0:
             raise ValueError(f"sigma_lambda must be positive, got {sigma_lambda}")
@@ -91,11 +104,20 @@ class RandomSlopesModel:
             raise ValueError(
                 f"residual_pooling must be 'none' or 'partial', got {residual_pooling!r}"
             )
+        if residual_tau <= 0:
+            raise ValueError(f"residual_tau must be positive, got {residual_tau}")
+        if residual_tau_dist not in ("halfnormal", "halfcauchy"):
+            raise ValueError(
+                "residual_tau_dist must be 'halfnormal' or 'halfcauchy', "
+                f"got {residual_tau_dist!r}"
+            )
         self._sigma_lambda = sigma_lambda
         self._centered_runs = centered_runs
         self._likelihood_override = likelihood
         self._hetero_override = heteroskedastic
         self._residual_pooling = residual_pooling
+        self._residual_tau = residual_tau
+        self._residual_tau_dist = residual_tau_dist
 
     @property
     def description(self) -> str:
@@ -111,6 +133,10 @@ class RandomSlopesModel:
             parts.append("hetero" if het else "homo")
         if self._residual_pooling == "partial":
             parts.append("residual_pooling=partial")
+            if self._residual_tau_dist == "halfcauchy":
+                parts.append(f"tau~HalfCauchy({self._residual_tau:g})")
+            else:
+                parts.append(f"tau~HalfNormal({self._residual_tau:g})")
         return f"RandomSlopes({', '.join(parts)})"
 
     def sigma_GM(self, post: PosteriorAccessor) -> np.ndarray:
@@ -340,7 +366,14 @@ class RandomSlopesModel:
                     log_sigma_eps_bar = pm.Normal(
                         "log_sigma_eps_bar", mu=np.log(0.1), sigma=1.5
                     )
-                    tau_sigma_eps = pm.HalfNormal("tau_sigma_eps", sigma=0.5)
+                    if self._residual_tau_dist == "halfcauchy":
+                        tau_sigma_eps = pm.HalfCauchy(
+                            "tau_sigma_eps", beta=self._residual_tau
+                        )
+                    else:
+                        tau_sigma_eps = pm.HalfNormal(
+                            "tau_sigma_eps", sigma=self._residual_tau
+                        )
                     z_sigma_eps = pm.Normal(
                         "z_sigma_eps", mu=0.0, sigma=1.0, dims="Config"
                     )
