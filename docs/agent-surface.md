@@ -2,7 +2,7 @@
 
 Revision 1. Not yet adversarially reviewed.
 
-Status: built on branch `claude/agent-surface`, cut from `main` @ `53abef8` (v0.3.2); draft PR.
+Status: built on branch `claude/agent-surface`, cut from `main` @ `53abef8` (v0.3.2); draft PR #1.
 Method: the agent-surface playbook, first piloted in the Ladruno OpenSees fork (WP-115). The
 method carries over between repos; the rules don't. Everything below comes from this repo's own history.
 
