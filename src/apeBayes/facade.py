@@ -945,39 +945,95 @@ class BayesEpistemicModel:
         self,
         *,
         include_interaction: bool | None = None,
+        kind: Literal["superpopulation", "finite"] = "superpopulation",
     ) -> pd.DataFrame:
-        """Posterior variance budget.
+        r"""Posterior variance budget of one observation.
 
         Parameters
         ----------
         include_interaction : bool, optional
-            If True, add a fifth "Interaction Var(γ_sr)" row (requires
-            a v8+ interaction model).  If None (default), include it
-            automatically when the posterior contains ``gamma_sr``.
-            If False, always return the legacy 4-row budget for
-            backward compatibility with v1–v7 pipelines.
+            If True, add the station×rupture interaction row (requires a
+            v8+ model). If None (default), include it automatically when
+            the posterior contains ``gamma_sr``. If False, drop it.
+        kind : {"superpopulation", "finite"}, default "superpopulation"
+            - ``"superpopulation"``: fixed factors (configs, stations) by
+              the variance of their realised levels over the observation
+              mix; random factors by their model scale, loaded by λ_case /
+              ξ_case and averaged over the observation mix
+              (E[λ²]σ²_run, E[ξ²]σ²_inter, E[σ²_u], E[σ²_v]); residual
+              E[σ²_ε]·ν/(ν−2). See :func:`analysis.variance.variance_budget`.
+            - ``"finite"``: every row is the variance over the observations
+              of the *realised* term in this data set (config, station,
+              λ·b, ξ·γ, u, v) and the residual is Var(y − μ) per draw.
+
+        Shares (``pct_*``) are computed per draw and then summarised.
         """
         p = self.posterior
+        d = self.data
         if include_interaction is None:
             include_interaction = p.has_interaction
-        gamma = p.gamma_sr() if include_interaction else None
-        return variance.variance_budget(
+        lam = p.lambda_case()
+        xi = p.xi_case()
+        c_obs = p._case_idx_obs()
+
+        if kind == "finite":
+            comps: list[tuple[str, np.ndarray]] = [
+                ("Config spread  Var(μ_config)", np.var(p.mu_config()[:, d.config_idx], axis=1)),
+                ("Station spread Var(δ_s)", np.var(p.delta_st()[:, d.station_idx], axis=1)),
+            ]
+            b = p.b_run()[:, d.run_idx]
+            comps.append((
+                "Run dispersion Var(λ·b)",
+                np.var(b if lam is None else lam[:, c_obs] * b, axis=1),
+            ))
+            g = p.gamma_sr()
+            if include_interaction and g is not None:
+                g_obs = g[:, d.station_idx * d.n_runs + d.run_idx]
+                comps.append((
+                    "Interaction   Var(ξ·γ)",
+                    np.var(g_obs if xi is None else xi[:, c_obs] * g_obs, axis=1),
+                ))
+            if p.has_case_record_terms:
+                comps.append(("Case×rupture  Var(u)", np.var(
+                    p.draws("u_case_run")[:, c_obs, d.run_idx], axis=1)))
+                comps.append(("Case×sta×rup  Var(v)", np.var(
+                    p.draws("v_case_sr")[:, c_obs, d.station_idx, d.run_idx], axis=1)))
+            comps.append((
+                "Residual disp. Var(y−μ)",
+                np.var(d.y[None, :] - p.linear_predictor(), axis=1),
+            ))
+            return self._tag(variance.budget_from_components(comps, ci=self.cfg.ci))
+        if kind != "superpopulation":
+            raise ValueError(f"Unknown kind {kind!r}")
+
+        su = p.sigma_u_case()
+        sv = p.sigma_v_case()
+        return self._tag(variance.variance_budget(
             p.mu_config(), p.delta_st(), p.sigma_run(), p.sigma_eps(),
-            self.data.config_idx, ci=self.cfg.ci, nu=p.nu(),
-            gamma_sr=gamma,
-        )
+            d.config_idx, ci=self.cfg.ci, nu=p.nu(),
+            station_idx=d.station_idx,
+            run_loading_obs=None if lam is None else lam[:, c_obs],
+            sigma_inter=p.sigma_inter() if include_interaction else None,
+            inter_loading_obs=None if xi is None else xi[:, c_obs],
+            sigma_u_obs=None if su is None else su[:, c_obs],
+            sigma_v_obs=None if sv is None else sv[:, c_obs],
+        ))
 
     def variance_component_table(
         self,
         configs: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Compute per-configuration variance components."""
+        """Posterior summaries of σ_run, the residual scale(s) and ν.
+
+        ``configs`` selects (and orders) the per-config residual rows; each
+        row is the residual scale of the config it is labelled with.
+        """
         p = self.posterior
-        labels = configs or p.config_labels
-        return variance.variance_components(
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return self._tag(variance.variance_components(
             p.sigma_run(), p.sigma_eps(), labels,
-            ci=self.cfg.ci, nu=p.nu(),
-        )
+            ci=self.cfg.ci, nu=p.nu(), subset_idx=subset_idx,
+        ))
 
     # ── Analysis: random-slopes parameters (v4+ λ, v8+ σ_inter, v9+ ξ) ──
 
@@ -1419,6 +1475,10 @@ class BayesEpistemicModel:
     # adds a small ``"name: <self.name>"`` watermark at the bottom-right
     # of the figure. This makes printed/shared plots self-identify the
     # model that produced them without touching titles or layout.
+
+    def _tag(self, table: pd.DataFrame) -> pd.DataFrame:
+        """Attach the convergence verdict to an exported table (``attrs``)."""
+        return table
 
     def _stamp(self, result: _R) -> _R:
         """Annotate the figure in ``result`` with ``self.name``; return unchanged.

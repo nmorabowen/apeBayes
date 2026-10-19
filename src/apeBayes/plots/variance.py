@@ -73,7 +73,7 @@ def plot_variance_budget_waterfall(
 
     names = df["component"].tolist()
     vals = df["var_med"].to_numpy(dtype=float)
-    pcts = df["pct_med"].to_numpy(dtype=float)
+    pcts = df["pct_mean" if "pct_mean" in df else "pct_med"].to_numpy(dtype=float)
     colors = _budget_colors(names)
 
     short_names = []
@@ -141,7 +141,7 @@ def plot_variance_budget_bars(
     df = budget_df.copy()
 
     components = df["component"].tolist()
-    pcts = df["pct_med"].to_numpy(dtype=float)
+    pcts = df["pct_mean" if "pct_mean" in df else "pct_med"].to_numpy(dtype=float)
     colors = _budget_colors(components)
 
     fig, ax = plt.subplots(figsize=figsize)
