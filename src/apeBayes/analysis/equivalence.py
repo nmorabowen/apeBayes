@@ -183,11 +183,18 @@ def epistemic_clusters(
     method: str = "average",
     threshold: float | None = None,
     n_clusters: int | None = None,
+    p_link: float = 0.5,
 ) -> pd.DataFrame:
-    """Hierarchical clustering on epistemic distance.
+    """Hierarchical clustering on epistemic distance D = 1 - P_eq.
 
     Uses either a distance *threshold* or a fixed *n_clusters* count.
-    If neither is given, defaults to ``threshold = 1 \u2212 alpha``.
+    If neither is given, the threshold is ``1 - p_link``: configurations
+    join a cluster when their (linkage-averaged) pairwise P_eq exceeds
+    ``p_link`` (default 0.5, "more likely equivalent than not").
+
+    Before 0.4.0 the default threshold was ``1 - alpha``, which reused the
+    equivalence radius alpha (a distance on the beta scale) as a
+    probability, so the clusters moved with alpha for the wrong reason.
 
     Returns
     -------
@@ -208,8 +215,10 @@ def epistemic_clusters(
     y = squareform(D, checks=False)
     Z = linkage(y, method=method)
 
+    if not (0.0 < p_link < 1.0):
+        raise ValueError(f"p_link must be in (0, 1), got {p_link}")
     if threshold is None and n_clusters is None:
-        threshold = 1.0 - alpha
+        threshold = 1.0 - p_link
 
     if n_clusters is not None:
         cluster_ids = fcluster(Z, t=int(n_clusters), criterion="maxclust")

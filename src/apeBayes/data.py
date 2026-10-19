@@ -282,6 +282,24 @@ def encode_dataset(df: pd.DataFrame, cfg: ModelConfig) -> EpistemicDataset:
         )
     ref_idx = label_to_idx[cfg.ref_config]
 
+    # ── configurations of the grid with no observations ──────────────────
+    # They would still get a parameter (pure prior, and through the
+    # sum-to-zero constraint they shift every other config's effect).
+    counts = np.bincount(config_idx, minlength=len(flat_labels))
+    empty = [flat_labels[i] for i in np.flatnonzero(counts == 0)]
+    if counts[ref_idx] == 0:
+        raise ValueError(
+            f"Reference config {cfg.ref_config!r} has no observations."
+        )
+    if empty:
+        import warnings
+        warnings.warn(
+            f"Configs {empty} are in the factor grid but have no observations; "
+            "their effects are pure prior and still enter the sum-to-zero "
+            "constraint. Restrict FactorSpec.levels or add the data.",
+            stacklevel=2,
+        )
+
     # ── factor grid (combo tuple → flat index) ───────────────────────────
     factor_grid = dict(combo_to_flat_idx)
 

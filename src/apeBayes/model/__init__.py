@@ -2,7 +2,8 @@
 
 from .base import ModelBuilder
 from .case_record import CaseRecordModel
-from .comparison import compare_models
+from .comparison import compare_fitted, compare_models, ensure_log_likelihood
+from .cv import compare_logo, leave_one_group_out
 from .flat import FlatConfigModel
 from .hierarchical import HierarchicalConfigModel
 from .random_slopes import RandomSlopesModel
@@ -19,7 +20,11 @@ __all__ = [
     "RandomSlopesModel",
     "builder_from_spec",
     "builder_spec",
+    "compare_fitted",
+    "compare_logo",
     "compare_models",
+    "ensure_log_likelihood",
+    "leave_one_group_out",
     "model_version",
     "sample_model",
 ]

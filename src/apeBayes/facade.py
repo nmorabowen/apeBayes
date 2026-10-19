@@ -53,6 +53,8 @@ from .plots.style import CMAP_DIV, CMAP_SEQ, FULL_WIDTH, HALF_WIDTH
 from .posterior.accessor import PosteriorAccessor
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import matplotlib.pyplot as plt
     from arviz import InferenceData
 
@@ -1374,6 +1376,7 @@ class BayesEpistemicModel:
         threshold: float | None = None,
         n_clusters: int | None = None,
         denominator: Literal["src", "gm"] = "gm",
+        p_link: float = 0.5,
     ) -> pd.DataFrame:
         r"""Hierarchical clustering of configurations by epistemic distance.
 
@@ -1401,11 +1404,14 @@ class BayesEpistemicModel:
               distances.
         threshold : float, optional
             Distance cutoff for flat clusters. Mutually exclusive with
-            ``n_clusters``. If both are None, defaults to ``1 − α`` so
-            that two configs with ``P_eq < α`` land in the same cluster.
+            ``n_clusters``. If both are None, defaults to ``1 − p_link``.
         n_clusters : int, optional
             If set, cut the linkage tree to produce exactly this many
             flat clusters (``criterion="maxclust"``).
+        p_link : float, default 0.5
+            Default cut: configs join when their linkage-averaged pairwise
+            P_eq exceeds ``p_link``. (Before 0.4.0 the cut was ``1 − α``,
+            mixing the equivalence radius with a probability.)
         denominator : {"src", "gm"}, default "gm"
             Aleatory SD for β. ``"pred"`` is not supported (same pairwise
             ambiguity as :meth:`epistemic_equivalence_matrix`).
@@ -1425,6 +1431,7 @@ class BayesEpistemicModel:
             p.mu_config(), sigma_denom,
             alpha=alpha, labels=labels, subset_idx=subset_idx,
             method=method, threshold=threshold, n_clusters=n_clusters,
+            p_link=p_link,
         )
 
     # ── Analysis: validation parameter ───────────────────────────────────
@@ -2999,20 +3006,61 @@ class BayesEpistemicModel:
 
     def compare_variants(
         self,
+        variants: Mapping[str, ModelBuilder] | None = None,
         *,
         ic: str = "loo",
     ) -> tuple[pd.DataFrame, dict[str, FittedVariant]]:
-        """Compare Student-t/Gaussian × hetero/homo variants.
+        """Refit model variants on this data and compare them by LOO / WAIC.
+
+        Parameters
+        ----------
+        variants : dict[str, ModelBuilder], optional
+            Builders to compare, e.g.
+            ``{"v8": RandomSlopesInteractionModel(), "v10": CaseRecordModel()}``.
+            Default: the historical v1 likelihood × residual grid
+            (Student-t / Gaussian × hetero / homo ``FlatConfigModel``).
+        ic : {"loo", "waic"}
 
         Returns the ArviZ comparison table and all fitted variants.
+        PSIS-LOO leaves out single observations; for the record structure
+        use :meth:`leave_one_group_out`.
         """
-        variants = {
-            "StudentT_hetero": FlatConfigModel(likelihood="student_t", heteroskedastic=True),
-            "Gaussian_hetero": FlatConfigModel(likelihood="gaussian", heteroskedastic=True),
-            "StudentT_homo": FlatConfigModel(likelihood="student_t", heteroskedastic=False),
-            "Gaussian_homo": FlatConfigModel(likelihood="gaussian", heteroskedastic=False),
-        }
+        if variants is None:
+            variants = {
+                "StudentT_hetero": FlatConfigModel(likelihood="student_t", heteroskedastic=True),
+                "Gaussian_hetero": FlatConfigModel(likelihood="gaussian", heteroskedastic=True),
+                "StudentT_homo": FlatConfigModel(likelihood="student_t", heteroskedastic=False),
+                "Gaussian_homo": FlatConfigModel(likelihood="gaussian", heteroskedastic=False),
+            }
         return compare_models(self.data, variants, self.cfg, ic=ic)
+
+    def log_likelihood(self) -> InferenceData:
+        """Return the posterior with its ``log_likelihood`` group (computed if absent)."""
+        from .model.comparison import ensure_log_likelihood
+
+        return ensure_log_likelihood(self.idata, self.builder, self.data, self.cfg)
+
+    def leave_one_group_out(
+        self,
+        *,
+        group: Literal["run", "station"] = "run",
+        builder: ModelBuilder | None = None,
+        folds: list[str] | None = None,
+        max_draws: int | None = 1000,
+    ) -> pd.DataFrame:
+        """Leave-one-rupture-out (or station-out) CV of this model's builder.
+
+        Refits once per left-out group with a Gaussian likelihood and scores
+        the held-out block by its exact joint marginal density; see
+        :func:`apeBayes.model.cv.leave_one_group_out`. Compare builders with
+        :func:`apeBayes.model.cv.compare_logo`.
+        """
+        from .model.cv import leave_one_group_out
+
+        return leave_one_group_out(
+            self._df, self.cfg, builder or self.builder,
+            group=group, folds=folds, max_draws=max_draws,
+        )
 
     # ── Repr ─────────────────────────────────────────────────────────────
 

@@ -269,3 +269,117 @@ def test_fit_without_builder_warns(monkeypatch):
     m = point_mass_model(truth())
     with pytest.warns(FutureWarning, match="FlatConfigModel"), pytest.raises(_Stop):
         m.fit()
+
+
+# ── A7: separability_check reports λ-relevant SDs and correlation CIs ───
+
+def test_separability_check_sd_ratio_sees_lambda_correlation_does_not():
+    from apeBayes import separability_check
+    from review_helpers import crossed_config, crossed_df
+
+    t = truth()
+    t["gamma_sr"] = np.zeros_like(t["gamma_sr"])
+    corr = separability_check(crossed_df(t), crossed_config())
+    # pure rank-1 patterns: every correlation is 1 whatever λ is
+    assert corr.attrs["min_pairwise_corr"] == pytest.approx(1.0)
+    np.testing.assert_allclose(corr.attrs["sd_ratio_to_ref"].to_numpy(),
+                               t["lambda_case"], rtol=1e-10)
+    ci = corr.attrs["corr_ci"]
+    assert len(ci) == 6 and {"lo", "hi"} <= set(ci.columns)
+
+
+def test_separability_corr_interval_is_wide_with_six_runs():
+    from scipy.stats import norm
+
+    r, n = 0.47, 6
+    half = norm.ppf(0.975) / np.sqrt(n - 3)
+    lo, hi = np.tanh(np.arctanh(r) - half), np.tanh(np.arctanh(r) + half)
+    assert lo < -0.5 and hi > 0.9  # the critique's (-0.55, 0.93)
+
+
+# ── A8 smaller fixes ────────────────────────────────────────────────────
+
+def test_plot_variance_ratio_homoskedastic_divides_by_sigma_src():
+    import matplotlib
+    matplotlib.use("Agg")
+    from apeBayes.plots.variance import plot_variance_ratio
+
+    fig, ax = plot_variance_ratio(np.full(200, 2.0), np.full(200, 0.5), ["1A", "1B"])
+    xs = ax.collections[0].get_offsets()[:, 0]
+    np.testing.assert_allclose(xs, 0.25)
+
+
+def test_plot_variance_ratio_keeps_label_column_pairing():
+    import matplotlib
+    matplotlib.use("Agg")
+    from apeBayes.plots.variance import plot_variance_ratio
+
+    S = 100
+    sig = np.column_stack([np.full(S, 0.4), np.full(S, 0.1)])  # labels 2A, 1A
+    fig, ax = plot_variance_ratio(np.ones(S), sig, ["2A", "1A"])
+    ticks = [t.get_text() for t in ax.get_yticklabels()]
+    xs = dict(zip(ticks, ax.collections[0].get_offsets()[:, 0]))
+    assert xs["1A"] == pytest.approx(0.1) and xs["2A"] == pytest.approx(0.4)
+
+
+def test_cluster_threshold_does_not_reuse_alpha():
+    from apeBayes.analysis.equivalence import epistemic_clusters
+
+    rng = np.random.default_rng(0)
+    S = 2000
+    mu = np.column_stack([rng.normal(0, 0.01, S), rng.normal(0.5, 0.01, S)])
+    sd = np.ones(S)
+    # P_eq(|Δμ| < α) is 0 at α=0.4 and 1 at α=0.7; the clustering should
+    # follow P_eq, not move its cut with α.
+    a = epistemic_clusters(mu, sd, alpha=0.4, labels=["X", "Y"])
+    b = epistemic_clusters(mu, sd, alpha=0.7, labels=["X", "Y"])
+    assert a["cluster"].nunique() == 2 and b["cluster"].nunique() == 1
+
+
+def test_empty_config_warns_and_empty_reference_raises():
+    from apeBayes.data import encode_dataset
+    from review_helpers import crossed_config, crossed_df
+
+    df = crossed_df(truth())
+    with pytest.warns(UserWarning, match="no observations"):
+        encode_dataset(df[df.TierCase != "2C"], crossed_config())
+    with pytest.raises(ValueError, match="Reference config"):
+        encode_dataset(df[df.TierCase != "4D"], crossed_config())
+
+
+# ── A5: leave-one-rupture-out marginal is the generative one ────────────
+
+@pytest.mark.parametrize("case_terms", [False, True])
+def test_logo_run_marginal_matches_monte_carlo(case_terms):
+    """The exact held-out-rupture density equals an MVN whose covariance is
+    estimated from freshly simulated rupture effects (f = 1 + 1/R)."""
+    from scipy.stats import multivariate_normal
+
+    from apeBayes.model.cv import _fold_lpd
+
+    t = truth(case_terms=case_terms)
+    t["sigma_eps"] = np.full(16, 0.3)
+    m = point_mass_model(t, n_draws=2)
+    rng = np.random.default_rng(5)
+    test = m._df[m._df.rupture == "rup_3"].copy()
+    test["edp"] = test["edp"] + rng.normal(0, 0.4, len(test))
+    lpd = _fold_lpd(m.posterior, test, m.cfg, "run", None, 0)
+
+    d = m.data
+    k = np.array([d.config_label_to_idx(c) for c in test.TierCase])
+    c = d.case_mapping()[1][k]
+    s = np.array([list(d.station_labels).index(x) for x in test.sta])
+    f = 1 + 1 / 6
+    M = 200_000
+    mean = t["mu0"] + t["mu_config"][k] + t["delta_st"][s]
+    b = rng.normal(0, np.sqrt(f) * t["sigma_run"], M)
+    g = rng.normal(0, np.sqrt(f) * t["sigma_inter"], (M, 3))
+    rec = t["lambda_case"][c][None] * b[:, None] + g[:, s]
+    if case_terms:
+        u = rng.normal(0, 1, (M, 4)) * np.sqrt(f) * t["sigma_u_case"]
+        v = rng.normal(0, 1, (M, 4, 3)) * np.sqrt(f) * t["sigma_v_case"][:, None]
+        rec = rec + u[:, c] + v[:, c, s]
+    # independent construction: covariance of the simulated record terms
+    C = np.cov(rec, rowvar=False) + np.diag(np.full(len(k), 0.3 ** 2))
+    ref = multivariate_normal(mean, C).logpdf(test.edp.to_numpy())
+    assert lpd == pytest.approx(ref, abs=0.1)

@@ -477,11 +477,18 @@ def plot_variance_ratio(
         t_factor = np.sqrt(nu / np.maximum(nu - 2.0, 1e-12))
 
     if sigma_eps.ndim == 1:
-        ratio = np.repeat((sigma_eps * t_factor)[:, None], len(labels), axis=1)
+        ratio = np.repeat(
+            ((sigma_eps * t_factor) / sigma_src)[:, None], len(labels), axis=1,
+        )
     else:
         ratio = (sigma_eps * t_factor[:, None]) / sigma_src[:, None]
 
-    labels = order_config_labels(labels)
+    # Re-sort the labels for display and permute the columns with them, so
+    # each row keeps the ratio of the config it is labelled with.
+    ordered = order_config_labels(labels)
+    pos = {lbl: i for i, lbl in enumerate(labels)}
+    ratio = ratio[:, [pos[lbl] for lbl in ordered]]
+    labels = ordered
     ci_lo, ci_hi = ci
     med = np.median(ratio, axis=0)
     lo = np.quantile(ratio, ci_lo, axis=0)
