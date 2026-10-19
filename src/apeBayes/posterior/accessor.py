@@ -159,6 +159,104 @@ class PosteriorAccessor:
             return None
         return self.draws("sigma_inter").ravel()
 
+    def sigma_u_case(self) -> np.ndarray | None:
+        """(S, n_cases) Case×rupture SDs (v10 / vc4), or None."""
+        if not self.has_var("sigma_u_case"):
+            return None
+        return self.draws("sigma_u_case")
+
+    def sigma_v_case(self) -> np.ndarray | None:
+        """(S, n_cases) Case×station×rupture SDs (v10 / vc4), or None."""
+        if not self.has_var("sigma_v_case"):
+            return None
+        return self.draws("sigma_v_case")
+
+    @property
+    def has_case_record_terms(self) -> bool:
+        """Return True if the posterior carries the v10 Case×record terms."""
+        return self.has_var("u_case_run")
+
+    # ── Linear predictor (every mean term of every variant) ──────────────
+
+    def _case_idx_obs(self) -> np.ndarray | None:
+        if self.lambda_case() is None and not self.has_case_record_terms and (
+            self.xi_case() is None
+        ):
+            return None
+        return self._data.case_mapping()[2]
+
+    def record_term(self) -> np.ndarray:
+        r"""(S, N) record (rupture / station×rupture) part of the mean.
+
+        .. math::
+            \lambda_{c} b_r + \xi_{c}\,\gamma_{sr} + u_{c r} + v_{c s r}
+
+        with λ = ξ = 1 and u = v = 0 when the variant lacks the term
+        (v1–v3: b_r only; v4–v7: λ b; v8: λ b + γ; v9: + ξ; v10: + u + v).
+        """
+        d = self._data
+        c = self._case_idx_obs()
+        b = self.b_run()[:, d.run_idx]
+        lam = self.lambda_case()
+        out = b if lam is None else lam[:, c] * b
+        g = self.gamma_sr()
+        if g is not None:
+            g_obs = g[:, d.station_idx * d.n_runs + d.run_idx]
+            xi = self.xi_case()
+            out = out + (g_obs if xi is None else xi[:, c] * g_obs)
+        if self.has_case_record_terms:
+            out = out + self.draws("u_case_run")[:, c, d.run_idx]
+            out = out + self.draws("v_case_sr")[:, c, d.station_idx, d.run_idx]
+        return out
+
+    def record_effect_at(
+        self, run_idx: int, station_idx: int | None = None,
+    ) -> np.ndarray:
+        """(S, n_configs) record term of each config at one rupture.
+
+        With ``station_idx`` the station-specific terms (ξ·γ, v) of that
+        station are added; without it they are averaged over stations.
+        """
+        d = self._data
+        lam = self.lambda_case()
+        xi = self.xi_case()
+        c = d.case_mapping()[1] if (
+            lam is not None or xi is not None or self.has_case_record_terms
+        ) else np.zeros(d.n_configs, dtype=int)
+        b = self.b_run()[:, run_idx]
+        out = b[:, None] * (lam[:, c] if lam is not None else 1.0)
+        out = np.broadcast_to(out, (b.shape[0], d.n_configs)).copy()
+        g = self.gamma_sr()
+        if g is not None:
+            g_sr = g.reshape(g.shape[0], d.n_stations, d.n_runs)[:, :, run_idx]
+            g_r = g_sr[:, station_idx] if station_idx is not None else g_sr.mean(axis=1)
+            out += g_r[:, None] * (xi[:, c] if xi is not None else 1.0)
+        if self.has_case_record_terms:
+            out += self.draws("u_case_run")[:, c, run_idx]
+            v = self.draws("v_case_sr")[:, :, :, run_idx]  # (S, C, n_st)
+            v_r = v[:, :, station_idx] if station_idx is not None else v.mean(axis=2)
+            out += v_r[:, c]
+        return out
+
+    def linear_predictor(self, *, include_records: bool = True) -> np.ndarray:
+        """(S, N) linear predictor per draw and observation.
+
+        ``include_records=False`` returns the fixed part
+        μ₀ + μ_config[k] + δ_s only; ``True`` adds :meth:`record_term`.
+        Uses a stored ``mu`` Deterministic when the model saved one.
+        """
+        d = self._data
+        if include_records and self.has_var("mu"):
+            return self.draws("mu")
+        fixed = (
+            self.mu0()[:, None]
+            + self.mu_config()[:, d.config_idx]
+            + self.delta_st()[:, d.station_idx]
+        )
+        if not include_records:
+            return fixed
+        return fixed + self.record_term()
+
     @property
     def has_interaction(self) -> bool:
         """Return True if posterior contains station-rupture interaction."""

@@ -157,7 +157,13 @@ class MultiEDPModel:
         return model
 
     def fit_all(self, **fit_kwargs: Any) -> MultiEDPModel:
-        """Fit every EDP sequentially.  Returns self for chaining."""
+        """Fit every EDP sequentially.  Returns self for chaining.
+
+        Pass ``builder=...`` explicitly (e.g. ``RandomSlopesInteractionModel()``
+        or ``CaseRecordModel()``); without it each EDP falls back to the v1
+        ``FlatConfigModel`` with a ``FutureWarning``. Every ``compare_*``
+        table carries a per-EDP ``converged`` column.
+        """
         for spec in self.edp_specs:
             if spec.name not in self.models:
                 self.fit(spec.name, **fit_kwargs)
@@ -206,6 +212,8 @@ class MultiEDPModel:
             tbl = tbl.copy()
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
+            if "converged" not in tbl.columns:
+                tbl.insert(2, "converged", m.converged)
             if spec.story is not None:
                 tbl["story"] = spec.story
             if spec.direction is not None:
@@ -249,6 +257,8 @@ class MultiEDPModel:
             tbl = tbl.copy()
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
+            if "converged" not in tbl.columns:
+                tbl.insert(2, "converged", m.converged)
             frames.append(tbl)
         return pd.concat(frames, ignore_index=True)  # type: ignore[no-any-return]
 
@@ -306,6 +316,8 @@ class MultiEDPModel:
             tbl = tbl.copy()
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
+            if "converged" not in tbl.columns:
+                tbl.insert(2, "converged", m.converged)
             if spec.story is not None:
                 tbl["story"] = spec.story
             if spec.direction is not None:
@@ -323,6 +335,8 @@ class MultiEDPModel:
             tbl = tbl.copy()
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
+            if "converged" not in tbl.columns:
+                tbl.insert(2, "converged", m.converged)
             frames.append(tbl)
         return pd.concat(frames, ignore_index=True)  # type: ignore[no-any-return]
 
@@ -339,6 +353,8 @@ class MultiEDPModel:
             tbl = tbl.copy()
             tbl.insert(0, "edp", spec.name)
             tbl.insert(1, "category", spec.category)
+            if "converged" not in tbl.columns:
+                tbl.insert(2, "converged", m.converged)
             frames.append(tbl)
         return pd.concat(frames, ignore_index=True)  # type: ignore[no-any-return]
 

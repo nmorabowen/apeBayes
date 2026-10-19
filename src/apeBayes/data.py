@@ -94,6 +94,40 @@ class EpistemicDataset:
             )
         return int(matches[0])
 
+    def case_mapping(self) -> tuple[list[str], np.ndarray, np.ndarray, int]:
+        """Return the Case structure of a two-factor (Tier × Case) design.
+
+        The second factor is the "Case" (the factor that carries the
+        per-Case loadings λ / ξ and the Case-level record terms).
+
+        Returns
+        -------
+        case_levels : list[str]
+            Ordered Case labels.
+        config_to_case : np.ndarray, shape (n_configs,)
+            Config index → Case index.
+        case_idx_obs : np.ndarray, shape (n_obs,)
+            Case index of each observation.
+        ref_case_idx : int
+            Case index of the reference configuration.
+        """
+        if len(self.cfg.factors) != 2:
+            raise ValueError(
+                "A Case mapping requires exactly 2 factors "
+                f"(SSI, Nonlinearity), got {len(self.cfg.factors)}."
+            )
+        case_levels = list(self.factor_levels[self.cfg.factors[1].name])
+        level_to_idx = {c: i for i, c in enumerate(case_levels)}
+        config_to_case = np.zeros(self.n_configs, dtype=int)
+        for combo, k in self.factor_grid.items():
+            config_to_case[k] = level_to_idx[str(combo[1])]
+        return (
+            case_levels,
+            config_to_case,
+            config_to_case[self.config_idx],
+            int(config_to_case[self.ref_idx]),
+        )
+
     def subset_config_indices(self, labels: list[str] | None) -> tuple[list[str], np.ndarray]:
         """Return (ordered_labels, integer_indices) for a subset of configs.
 
@@ -247,6 +281,24 @@ def encode_dataset(df: pd.DataFrame, cfg: ModelConfig) -> EpistemicDataset:
             f"Available: {flat_labels}"
         )
     ref_idx = label_to_idx[cfg.ref_config]
+
+    # ── configurations of the grid with no observations ──────────────────
+    # They would still get a parameter (pure prior, and through the
+    # sum-to-zero constraint they shift every other config's effect).
+    counts = np.bincount(config_idx, minlength=len(flat_labels))
+    empty = [flat_labels[i] for i in np.flatnonzero(counts == 0)]
+    if counts[ref_idx] == 0:
+        raise ValueError(
+            f"Reference config {cfg.ref_config!r} has no observations."
+        )
+    if empty:
+        import warnings
+        warnings.warn(
+            f"Configs {empty} are in the factor grid but have no observations; "
+            "their effects are pure prior and still enter the sum-to-zero "
+            "constraint. Restrict FactorSpec.levels or add the data.",
+            stacklevel=2,
+        )
 
     # ── factor grid (combo tuple → flat index) ───────────────────────────
     factor_grid = dict(combo_to_flat_idx)

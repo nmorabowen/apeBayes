@@ -39,20 +39,75 @@ structure is modeled explicitly, and how is the residual scale handled."
   Experimental. Adds a per-Case loading `xi_case` on the station × rupture
   interaction `gamma_sr`, analogous to how `lambda_case` loads the rupture
   effect `b_run`.
+- **v10 ("vc4")** — `CaseRecordModel` (0.4.0). Proposed by the 2026-10-19
+  model critique. v8's record block is rank 1: one rupture pattern scaled by
+  `lambda_case`, plus one `gamma_sr` shared by every configuration.
+  Leave-one-rupture-out CV on the Paper 1 data rejected it by 56–75 nats.
+  v10 is v8 plus two nested terms:
+  - a Case × rupture effect `u_case_run`, and
+  - a Case × station × rupture effect `v_case_sr`,
+  each with a per-Case SD (`sigma_u_case`, `sigma_v_case`). It also uses
+  Case-level residual SDs (`sigma_eps_case`), unpooled config effects, and
+  `ZeroSumNormal` for every sum-to-zero. v8 is v10 with σ_u = σ_v = 0 and
+  per-config residuals. Here
+  σ_GM = √(σ_run² + σ_inter² + σ²_u,ref + σ²_v,ref).
+  Whether the papers adopt it is the author's decision; the v8 / v8.1
+  builders and their published numbers are unchanged.
 
-### `separability_check`: a pre-fit diagnostic
+All random-slopes builders accept `zero_sum="last"` (default, the published
+scheme) or `zero_sum="zsn"`. With `"last"`, the last level is minus the sum
+of the others, so its prior variance is (n−1)× larger and results depend on
+level order. `"zsn"` uses `pm.ZeroSumNormal` and puts a two-axis zero sum on
+`gamma_sr`.
 
-`RandomSlopesModel` and `RandomSlopesInteractionModel` (v4-v9) all assume
-that a rupture's effect is *shared* across Case levels — each Case merely
-rescales the same underlying run pattern through `lambda_case`. That
-assumption is only checkable after looking at the data: `separability_check`
-computes it directly from the raw long-format frame, before any sampling.
-It centers the EDP within each (configuration, station) group, averages the
-residual by (Case level, run), and returns the Case-by-Case Pearson
-correlation matrix of those run patterns, together with
-`result.attrs["min_pairwise_corr"]` and `result.attrs["all_near_one"]`. A low
-minimum pairwise correlation (rule of thumb: below about 0.4) means the
-common-rupture-effect assumption is violated and `lambda_case` will not be
-identified; correlations all near one mean the Case levels differ by little
-more than a constant offset, leaving nothing case-specific for `lambda_case`
-to fit.
+### Checks to run on any fit (0.4.0)
+
+- **Convergence.** `model.convergence` / `model.converged`. `fit(strict=True)`
+  raises unless max R-hat ≤ 1.01, min bulk/tail ESS ≥ 400 and there are no
+  divergences. Every exported table carries the flag.
+- **Record structure.** `model.leave_one_group_out(group="run")` for each
+  candidate builder, then `apeBayes.model.compare_logo`. PSIS-LOO
+  (`compare_fitted`) cannot test the record structure, because it leaves out
+  single observations that share their rupture with the rest.
+- **What the decision generalises to.** `decision_report(record_marginal=True,
+  rope_abs=np.log(1.2))` adds two things:
+  - the decision for a new set of records, not just these 18; and
+  - a ROPE that is not estimated from the same six ruptures.
+- **The denominator.** `denominator="rtr"` / `sigma_rtr_ref_draws()` use the
+  reference configuration's own record-to-record SD. σ_GM is the record
+  variance shared across configurations; it is not 4D's own.
+  `record_discrepancy_table()` gives the per-record SD of y_k − y_ref, since
+  median equivalence is not record-level interchangeability.
+
+### `separability_check`: a pre-fit screen, not a test of the model
+
+`RandomSlopesModel` and `RandomSlopesInteractionModel` (v4-v9) assume that a
+rupture's effect is *shared* across Case levels: each Case rescales the same
+run pattern through `lambda_case`. `separability_check` looks at this in the
+raw long-format frame before any sampling. It centres the EDP within each
+(configuration, station) group, averages the residual by (Case level, run),
+and returns the Case-by-Case Pearson correlation matrix of those run
+patterns. Its attributes are:
+
+- `min_pairwise_corr`
+- `corr_ci`: Fisher-z intervals
+- `run_pattern_sd`
+- `sd_ratio_to_ref`: each Case's pattern SD over the reference Case's, a
+  raw analogue of λ
+
+What it cannot do:
+
+- **It cannot detect λ.** Correlation ignores scale; read `sd_ratio_to_ref`
+  for that.
+- **It has little power.** With 6 ruptures the 95 % interval for r = 0.47
+  is (−0.55, 0.93).
+- **Passing it does not validate the rank-1 structure.** On the San Ramon
+  PFA-roof data the minimum correlation was 0.47, passing the 0.4 rule of
+  thumb, yet leave-one-rupture-out CV rejected v8 by 62 nats.
+
+A low minimum correlation (below about 0.4) is a warning that the shared
+pattern fails. A high one proves nothing; test the structure with
+`leave_one_group_out`.
+
+See `CHANGELOG.md` for the 0.4.0 fixes, including which reported numbers they
+change.

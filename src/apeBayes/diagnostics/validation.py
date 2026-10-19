@@ -100,6 +100,7 @@ def separability_check(
     cfg: ModelConfig,
     *,
     case_factor: str | None = None,
+    ci: float = 0.95,
 ) -> pd.DataFrame:
     """Pre-fit separability diagnostic for the random-slopes models.
 
@@ -132,26 +133,50 @@ def separability_check(
         Name or column of the factor to treat as "Case". Defaults to the
         last entry in ``cfg.factors`` (matching how ``RandomSlopesModel``
         picks its Case factor).
+    ci : float, default 0.95
+        Coverage of the Fisher-z interval reported for each correlation.
 
     Returns
     -------
     pd.DataFrame
         Square Case-by-Case Pearson correlation matrix of the run patterns,
-        indexed and columned by the Case levels. Two extra diagnostics are
-        attached as DataFrame attributes:
+        indexed and columned by the Case levels. Diagnostics attached as
+        DataFrame attributes:
 
-        - ``result.attrs["min_pairwise_corr"]`` — the minimum pairwise
-          correlation over the upper triangle (excluding the diagonal).
-          Below roughly **0.4**, the common-rupture-effect assumption
-          behind ``RandomSlopesModel`` / ``RandomSlopesInteractionModel``
-          is violated: the Case levels do not respond to the same ruptures
-          in the same way, and ``lambda_case`` is not identified.
-        - ``result.attrs["all_near_one"]`` — ``True`` when every pairwise
-          correlation is at least **0.98**. This means the Case levels
-          differ by an (approximately) constant offset only, so the
-          per-configuration residual pattern has nothing case-specific
-          left to carry — ``lambda_case`` would have no signal to fit
-          beyond a shared scale.
+        - ``attrs["min_pairwise_corr"]``: minimum pairwise correlation over
+          the upper triangle.
+        - ``attrs["corr_ci"]``: DataFrame with one row per Case pair
+          (``case_i``, ``case_j``, ``r``, ``lo``, ``hi``): Fisher-z
+          intervals with n = number of runs. With 6 ruptures the 95 %
+          interval for r = 0.47 is about (−0.55, 0.93), so a single
+          correlation carries little information.
+        - ``attrs["min_pairwise_corr_ci"]``: the interval of the minimum pair.
+        - ``attrs["all_near_one"]``: every pairwise correlation ≥ 0.98.
+        - ``attrs["run_pattern_sd"]``: Series, SD over runs of each Case's
+          run pattern (ddof=1).
+        - ``attrs["sd_ratio_to_ref"]``: Series, run-pattern SD of each Case
+          divided by that of the reference Case (the Case of
+          ``cfg.ref_config``); a crude raw-data analogue of λ_c.
+
+    Notes
+    -----
+    What this check can and cannot say:
+
+    - **It cannot detect λ.** Pearson correlation is invariant to the
+      scale of each Case's pattern, so it is blind to how strongly each
+      Case loads the rupture effect. Read the SD ratios for that.
+    - **It cannot validate the rank-1 structure.** A high correlation is
+      necessary, not sufficient, for "every Case sees the same rupture
+      pattern up to a scale": on the San Ramon PFA-roof data the minimum
+      correlation was 0.47 (passing the 0.4 rule of thumb) while
+      leave-one-rupture-out CV rejected the rank-1 model by 62 nats.
+      With 6 ruptures the correlations are themselves very uncertain (see
+      ``corr_ci``). Test the record structure with
+      :func:`apeBayes.model.cv.leave_one_group_out` (rank-1 v8 vs the v10
+      ``CaseRecordModel``), not with this check.
+    - Rules of thumb: a minimum correlation below about 0.4 is a warning
+      that the shared-rupture assumption fails; all correlations ≥ 0.98
+      mean the Case patterns are near-identical in shape.
     """
     case_spec = _resolve_case_factor(cfg, case_factor)
     case_col = case_spec.column
@@ -206,6 +231,48 @@ def separability_check(
         min_pairwise_corr = float("nan")
         all_near_one = True
 
+    # Fisher-z intervals (n = number of runs observed in every Case).
+    from scipy.stats import norm
+
+    n_runs = int(wide.dropna().shape[0])
+    zq = float(norm.ppf(0.5 + ci / 2.0))
+    pairs = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            r = float(corr.iloc[i, j])
+            if n_runs > 3 and np.isfinite(r):
+                z = np.arctanh(np.clip(r, -0.999999, 0.999999))
+                half = zq / np.sqrt(n_runs - 3)
+                lo, hi = float(np.tanh(z - half)), float(np.tanh(z + half))
+            else:
+                lo, hi = float("nan"), float("nan")
+            pairs.append({"case_i": case_levels[i], "case_j": case_levels[j],
+                          "r": r, "lo": lo, "hi": hi})
+    corr_ci = pd.DataFrame(pairs, columns=["case_i", "case_j", "r", "lo", "hi"])
+
+    # Run-pattern SDs and their ratio to the reference Case (λ proxy).
+    run_sd = wide.std(axis=0, ddof=1)
+    ref_case = _ref_case_level(cfg, case_spec, case_levels)
+    sd_ratio = run_sd / run_sd[ref_case] if ref_case in run_sd.index else run_sd * np.nan
+
     corr.attrs["min_pairwise_corr"] = min_pairwise_corr
     corr.attrs["all_near_one"] = all_near_one
+    corr.attrs["corr_ci"] = corr_ci
+    if len(corr_ci) and np.isfinite(min_pairwise_corr):
+        row = corr_ci.loc[corr_ci["r"].idxmin()]
+        corr.attrs["min_pairwise_corr_ci"] = (float(row["lo"]), float(row["hi"]))
+    else:
+        corr.attrs["min_pairwise_corr_ci"] = (float("nan"), float("nan"))
+    corr.attrs["run_pattern_sd"] = run_sd
+    corr.attrs["sd_ratio_to_ref"] = sd_ratio
+    corr.attrs["n_runs"] = n_runs
     return corr
+
+
+def _ref_case_level(cfg: ModelConfig, case_spec: FactorSpec, case_levels: list[str]) -> str:
+    """Case level of ``cfg.ref_config`` (longest level that is a suffix/part of it)."""
+    ref = str(cfg.ref_config)
+    hits = [c for c in case_levels if ref.endswith(str(c))] or [
+        c for c in case_levels if str(c) in ref
+    ]
+    return max(hits, key=len) if hits else case_levels[-1]

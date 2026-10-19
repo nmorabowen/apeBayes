@@ -2,13 +2,15 @@
 Model comparison via LOO-CV / WAIC.
 
 Fits multiple model variants to the same EpistemicDataset and returns
-a ranked comparison table.
+a ranked comparison table. Needs the pointwise log-likelihood, which
+``sample_model`` stores since 0.4.0 (and :func:`ensure_log_likelihood`
+adds to older posteriors).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import arviz as az
 from arviz import InferenceData
@@ -90,3 +92,51 @@ def compare_models(
     comparison = az.compare(idata_dict, ic=ic, scale=scale)
 
     return comparison, fitted
+
+
+def ensure_log_likelihood(
+    idata: InferenceData,
+    builder: ModelBuilder,
+    data: EpistemicDataset,
+    cfg: ModelConfig,
+) -> InferenceData:
+    """Add the pointwise ``log_likelihood`` group if the posterior lacks it.
+
+    Posteriors sampled before 0.4.0 (or with nutpie and
+    ``store_log_likelihood=False``) have none; the model is rebuilt from
+    ``builder`` and the log-likelihood evaluated at every stored draw.
+    """
+    if "log_likelihood" in idata.groups():
+        return idata
+    import pymc as pm
+
+    model = builder.build(data, cfg)
+    pm.compute_log_likelihood(idata, model=model, extend_inferencedata=True,
+                              progressbar=False)
+    return idata
+
+
+def compare_fitted(
+    fitted: Mapping[str, Any],
+    *,
+    ic: str = "loo",
+    scale: str = "log",
+) -> pd.DataFrame:
+    """Compare already-fitted ``BayesEpistemicModel`` objects with LOO / WAIC.
+
+    Each model's log-likelihood is computed on demand if missing (see
+    :func:`ensure_log_likelihood`). All models must be fitted to the same
+    observations.
+
+    Note: PSIS-LOO leaves out single observations, which share rupture and
+    station effects with the rest; to test the record structure use
+    :func:`apeBayes.model.cv.leave_one_group_out`.
+    """
+    idatas = {}
+    n_obs = set()
+    for name, m in fitted.items():
+        idatas[name] = ensure_log_likelihood(m.idata, m.builder, m.data, m.cfg)
+        n_obs.add(m.data.n_obs)
+    if len(n_obs) > 1:
+        raise ValueError(f"Models were fitted to different data sizes: {sorted(n_obs)}")
+    return az.compare(idatas, ic=ic, scale=scale)

@@ -95,6 +95,9 @@ class SamplingConfig:
     max_treedepth : int, default 12
         NUTS max tree depth. Raise (e.g., to 15) if the sampler hits
         the limit frequently; lower to 10 for well-behaved models.
+        Honoured by both backends since 0.4.0 (nutpie receives it as
+        ``maxdepth``; before 0.4.0 nutpie silently used its default 10, so
+        set 10 to reproduce a pre-0.4.0 nutpie fit draw for draw).
     seed : int, default 123
         RNG seed for reproducibility.
     sampler : {"nutpie", "pymc"}, default "nutpie"
@@ -106,6 +109,14 @@ class SamplingConfig:
         - ``"pymc"`` — PyMC's built-in NUTS. Slower but has no extra
           dependency. Use if ``nutpie`` isn't importable or if you need
           features it doesn't support (e.g., some custom step methods).
+
+        A missing ``nutpie`` falls back to PyMC with a warning and is
+        recorded in ``idata.attrs["sampler_fallback"]``; a nutpie runtime
+        error is raised, never silently replaced.
+    store_log_likelihood : bool, default True
+        Store the pointwise log-likelihood group (needed by LOO / WAIC in
+        ``compare_models``). Costs N × chains × draws floats in the saved
+        posterior; set False for very long canonical runs if not needed.
     """
 
     draws: int = 2000
@@ -115,6 +126,7 @@ class SamplingConfig:
     max_treedepth: int = 12
     seed: int = 123
     sampler: Literal["nutpie", "pymc"] = "nutpie"
+    store_log_likelihood: bool = True
 
     def __post_init__(self) -> None:
         if self.draws < 1:
@@ -133,7 +145,9 @@ class SamplingConfig:
 #   src  -> σ_src                         (v6-era conservative)
 #   gm   -> σ_GM = √(σ_src² + σ_inter²)   (canonical, v8)
 #   pred -> σ_pred (adds residual)        (full-predictive generous)
-_ALLOWED_DENOMINATORS: tuple[str, ...] = ("src", "gm", "pred")
+#   rtr  -> σ_RTR,ref, the reference config's own record-to-record SD
+#           estimated from its data alone (analysis/reference.py; 0.4.0)
+_ALLOWED_DENOMINATORS: tuple[str, ...] = ("src", "gm", "pred", "rtr")
 
 
 @dataclass(frozen=True)
@@ -153,9 +167,11 @@ class DecisionConfig:
         Probability gate for the equivalence call. Must lie in ``(0, 1)``.
         Default 0.95 matches moderate-consequence reliability conventions.
     denominators : tuple[str, ...]
-        Subset of ``{"src", "gm", "pred"}`` indicating which β variants to
-        compute. ``"gm"`` is canonical; ``"src"`` and ``"pred"`` are the
-        sensitivity endpoints.
+        Subset of ``{"src", "gm", "pred", "rtr"}`` indicating which β
+        variants to compute. ``"gm"`` is canonical; ``"src"`` and ``"pred"``
+        are the sensitivity endpoints; ``"rtr"`` (opt-in, it fits a small
+        extra model) is the reference config's directly estimated
+        record-to-record SD.
     """
 
     alpha_eq: float = 0.4

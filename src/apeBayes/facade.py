@@ -9,8 +9,10 @@ independently usable.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import tempfile
+import warnings
 import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -28,22 +30,30 @@ from .config import (
 )
 from .data import EpistemicDataset, encode_dataset
 from .diagnostics.convergence import (
+    ConvergenceWarning,
+    attach_convergence,
+    convergence_message,
     diagnostics_summary,
     divergences_count,
     ess_table,
     rhat_table,
+    stored_convergence,
 )
 from .diagnostics.validation import posterior_predictive_check
+from .model.case_record import CaseRecordModel
 from .model.comparison import FittedVariant, compare_models
 from .model.flat import FlatConfigModel
-from .model.hierarchical import HierarchicalConfigModel
 from .model.random_slopes import RandomSlopesModel
 from .model.random_slopes_interaction import RandomSlopesInteractionModel
+from .model.registry import ATTR_KEY as _BUILDER_ATTR
+from .model.registry import builder_from_spec, builder_spec, model_version
 from .model.sampling import sample_model
 from .plots.style import CMAP_DIV, CMAP_SEQ, FULL_WIDTH, HALF_WIDTH
 from .posterior.accessor import PosteriorAccessor
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import matplotlib.pyplot as plt
     from arviz import InferenceData
 
@@ -123,6 +133,7 @@ def _serialize_config(cfg: ModelConfig) -> dict[str, Any]:
                 "max_treedepth": cfg.sampling.max_treedepth,
                 "seed": cfg.sampling.seed,
                 "sampler": cfg.sampling.sampler,
+                "store_log_likelihood": cfg.sampling.store_log_likelihood,
             },
             "decision": {
                 "alpha_eq": cfg.decision.alpha_eq,
@@ -221,51 +232,86 @@ _R = TypeVar("_R")
 
 
 def _variant_tag(builder: ModelBuilder) -> str:
-    """Return a short tag describing the variant class.
+    """Return the lineage tag of a builder (v1-v3, v4-v7, v8, v8.1, v9, v10).
 
-    Used by :func:`_detect_builder` to compare a user-supplied builder
-    against the variant inferred from the posterior.
+    Used by :meth:`BayesEpistemicModel.load` to compare a user-supplied
+    builder against the variant inferred from the posterior.
     """
-    if isinstance(builder, RandomSlopesInteractionModel):
-        # pylint: disable=protected-access
-        return "v9" if getattr(builder, "_interaction_loading", False) else "v8"
-    if isinstance(builder, RandomSlopesModel):
-        return "v4-v7"
-    if isinstance(builder, (HierarchicalConfigModel, FlatConfigModel)):
-        return "v1-v3"
-    return type(builder).__name__
+    return model_version(builder)
+
+
+def _record_builder(idata: InferenceData, builder: ModelBuilder) -> None:
+    """Store the builder spec (class + options) in ``idata.attrs``."""
+    idata.attrs[_BUILDER_ATTR] = json.dumps(builder_spec(builder))
+
+
+def _check_coords(idata: InferenceData, data: EpistemicDataset) -> None:
+    """Raise if the posterior's level coordinates disagree with the data.
+
+    Every index in the posterior (config, station, run) refers to the label
+    order of the dataset it was fitted on. If a re-encoded DataFrame orders
+    or names the levels differently (other ``FactorSpec.levels``, a renamed
+    station, a dropped rupture), every effect would silently be attached to
+    the wrong level.
+    """
+    post = idata.posterior
+    for dim, labels in (
+        ("Config", data.config_labels),
+        ("Station", data.station_labels),
+        ("Run", data.run_labels),
+    ):
+        if dim not in post.coords:
+            continue
+        saved = [str(v) for v in post.coords[dim].values]
+        now = [str(v) for v in labels]
+        if saved != now:
+            raise ValueError(
+                f"Posterior coordinate {dim!r} does not match the re-encoded data: "
+                f"posterior {saved[:6]}... vs data {now[:6]}... The DataFrame / "
+                "ModelConfig passed to load() encodes the levels differently from "
+                "the fit; every effect would be attached to the wrong level."
+            )
 
 
 def _detect_builder(post: PosteriorAccessor) -> tuple[ModelBuilder, str]:
-    """Infer which ModelBuilder produced a posterior from its variable set.
+    """Infer which ModelBuilder produced a posterior.
+
+    If the posterior carries a recorded builder spec
+    (``idata.attrs["apebayes_builder"]``, written by ``fit`` since 0.4.0)
+    that builder is rebuilt with its exact options. Otherwise the variant
+    is inferred from the variable set:
+
+    - ``u_case_run``     present → v10 ``CaseRecordModel``.
+    - ``xi_case``        present → v9 ``RandomSlopesInteractionModel``
+      (σ_GM raises NotImplementedError rather than silently returning
+      the v8 formula).
+    - ``gamma_sr``       present → v8, or v8.1 when the pooled residual
+      prior (``tau_sigma_eps``) is present. The v8.1 spread prior and the
+      zero-sum scheme cannot be recovered from variable names alone (a
+      ``z_inter`` variable implies ``zero_sum="zsn"``).
+    - ``lambda_case``    present → v4-v7 ``RandomSlopesModel``.
+    - otherwise                  → v1-v3; σ_GM is σ_src either way, so
+      ``FlatConfigModel`` is returned.
 
     Returns
     -------
     (builder, tag)
-        A default-constructed builder matching the posterior's variant and
-        the variant tag string (``'v9'`` / ``'v8'`` / ``'v4-v7'`` /
-        ``'v1-v3'``).
-
-    Notes
-    -----
-    Probes used (see ``uncertanty_measures.md`` §7 for the σ_GM formula
-    associated with each variant):
-
-    - ``xi_case``     present → v9 RandomSlopesInteractionModel (guard:
-      σ_GM raises NotImplementedError, but we still want to route there
-      so the error is correct rather than silently returning σ_src).
-    - ``gamma_sr``    present → v8 RandomSlopesInteractionModel.
-    - ``lambda_case`` present → v4-v7 RandomSlopesModel.
-    - otherwise                → v1-v3; σ_GM is σ_src either way so we
-      return FlatConfigModel (HierarchicalConfigModel has identical
-      σ_GM, so the dispatch is equivalent).
     """
+    spec = (getattr(post.idata, "attrs", None) or {}).get(_BUILDER_ATTR)
+    if spec:
+        b = builder_from_spec(spec)
+        return b, model_version(b)
+    zs = "zsn" if post.has_var("z_inter") or post.has_var("z_run") else "last"
+    if post.has_var("u_case_run"):
+        return CaseRecordModel(), "v10"
     if post.has_var("xi_case"):
-        return RandomSlopesInteractionModel(interaction_loading=True), "v9"
+        return RandomSlopesInteractionModel(interaction_loading=True, zero_sum=zs), "v9"
     if post.has_var("gamma_sr"):
-        return RandomSlopesInteractionModel(), "v8"
+        if post.has_var("tau_sigma_eps"):
+            return RandomSlopesInteractionModel(residual_pooling="partial", zero_sum=zs), "v8.1"
+        return RandomSlopesInteractionModel(zero_sum=zs), "v8"
     if post.has_var("lambda_case"):
-        return RandomSlopesModel(), "v4-v7"
+        return RandomSlopesModel(zero_sum=zs), "v4-v7"
     return FlatConfigModel(), "v1-v3"
 
 
@@ -313,22 +359,39 @@ class BayesEpistemicModel:
         builder: ModelBuilder | None = None,
         prior_predictive: bool = True,
         posterior_predictive: bool = True,
+        strict: bool = False,
     ) -> BayesEpistemicModel:
         """Build and sample the model.
 
         Parameters
         ----------
         builder : ModelBuilder, optional
-            Custom model builder.  Defaults to FlatConfigModel with
-            settings from self.cfg.
+            Model builder. **Pass it explicitly.** When omitted, the v1
+            ``FlatConfigModel`` is used (historical default) and a
+            ``FutureWarning`` is issued; the paper models are
+            ``RandomSlopesInteractionModel`` (v8 / v8.1) and
+            ``CaseRecordModel`` (v10).
         prior_predictive : bool
             Sample prior predictive before MCMC.
         posterior_predictive : bool
             Sample posterior predictive after MCMC.
+        strict : bool, default False
+            Convergence gate (max R-hat ≤ 1.01, min bulk/tail ESS ≥ 400,
+            no divergences; see :attr:`convergence`). On failure a
+            ``ConvergenceWarning`` is issued, or ``RuntimeError`` raised
+            when ``strict`` is True. Either way the verdict is stored in
+            ``idata.attrs`` and carried by the exported tables.
 
         Returns self for chaining.
         """
         if builder is None:
+            warnings.warn(
+                "BayesEpistemicModel.fit() without builder= falls back to the v1 "
+                "FlatConfigModel. Pass the builder explicitly (e.g. "
+                "RandomSlopesInteractionModel() for v8, CaseRecordModel() for v10).",
+                FutureWarning,
+                stacklevel=2,
+            )
             builder = FlatConfigModel()
         self._builder = builder
 
@@ -339,9 +402,43 @@ class BayesEpistemicModel:
             prior_predictive=prior_predictive,
             posterior_predictive=posterior_predictive,
         )
+        _record_builder(idata, builder)
         self._posterior = PosteriorAccessor(idata, self.data)
         self._sigma_gm_cache = None
+        self._check_convergence(strict=strict)
         return self
+
+    # ── Convergence gate ────────────────────────────────────────────────
+
+    @property
+    def convergence(self) -> dict:
+        """Convergence verdict of the posterior (see ``convergence_report``).
+
+        Read from ``idata.attrs`` when the fit stored it; computed (and
+        stored) on first access for posteriors saved before 0.4.0.
+        """
+        rep = stored_convergence(self.idata)
+        if rep is None:
+            rep = attach_convergence(self.idata)
+        return rep
+
+    @property
+    def converged(self) -> bool:
+        """True iff the posterior passes the convergence gate."""
+        return bool(self.convergence["converged"])
+
+    def _check_convergence(self, *, strict: bool) -> None:
+        rep = self.convergence
+        if rep["converged"]:
+            return
+        msg = (
+            f"Posterior{' ' + repr(self.name) if self.name else ''} fails the "
+            f"convergence gate: {convergence_message(rep)}. Results are flagged "
+            "converged=False."
+        )
+        if strict:
+            raise RuntimeError(msg)
+        warnings.warn(msg, ConvergenceWarning, stacklevel=3)
 
     @property
     def posterior(self) -> PosteriorAccessor:
@@ -455,7 +552,7 @@ class BayesEpistemicModel:
                 tmp = Path(tmp_str)
                 self.idata.to_netcdf(str(tmp / _BUNDLE_IDATA_NAME))
                 (tmp / _BUNDLE_CONFIG_NAME).write_text(
-                    json.dumps(_serialize_config(self.cfg), indent=2),
+                    json.dumps(self._bundle_payload(), indent=2),
                     encoding="utf-8",
                 )
                 self._df.to_parquet(
@@ -473,13 +570,20 @@ class BayesEpistemicModel:
         bundle_dir.mkdir(parents=True, exist_ok=True)
         self.idata.to_netcdf(str(bundle_dir / _BUNDLE_IDATA_NAME))
         (bundle_dir / _BUNDLE_CONFIG_NAME).write_text(
-            json.dumps(_serialize_config(self.cfg), indent=2),
+            json.dumps(self._bundle_payload(), indent=2),
             encoding="utf-8",
         )
         self._df.to_parquet(
             bundle_dir / _BUNDLE_DATA_NAME, engine="pyarrow", compression="snappy",
         )
         return bundle_dir
+
+    def _bundle_payload(self) -> dict[str, Any]:
+        """config.json contents: the ModelConfig plus the builder spec."""
+        payload = _serialize_config(self.cfg)
+        if self._builder is not None:
+            payload["builder"] = builder_spec(self._builder)
+        return payload
 
     @classmethod
     def load(
@@ -600,8 +704,12 @@ class BayesEpistemicModel:
                 df = pd.read_parquet(data_file)
 
             idata = _read_idata_eager(idata_file)
+            payload_builder = json.loads(cfg_file.read_text(encoding="utf-8")).get("builder")
+            if payload_builder and _BUILDER_ATTR not in idata.attrs:
+                idata.attrs[_BUILDER_ATTR] = json.dumps(payload_builder)
             obj = cls(df, cfg=cfg, name=name)
 
+        _check_coords(idata, obj.data)
         post = PosteriorAccessor(idata, obj.data)
         obj._posterior = post
 
@@ -776,7 +884,7 @@ class BayesEpistemicModel:
         )
 
     def _sigma_denom_for(
-        self, denominator: Literal["src", "gm", "pred"], ref_idx: int,
+        self, denominator: Literal["src", "gm", "pred", "rtr"], ref_idx: int,
     ) -> np.ndarray:
         """Resolve the requested aleatory denominator to an (S,) array."""
         if denominator == "src":
@@ -785,7 +893,97 @@ class BayesEpistemicModel:
             return self.sigma_GM_draws()
         if denominator == "pred":
             return self.sigma_pred_draws(ref_idx=ref_idx)
+        if denominator == "rtr":
+            return self.sigma_rtr_ref_draws()
         raise ValueError(f"Unknown denominator {denominator!r}")
+
+    # ── Reference record-to-record SD, new-record contrasts ──────────────
+
+    def sigma_rtr_ref_draws(self, *, refit: bool = False) -> np.ndarray:
+        """(S,) draws of σ_RTR,ref: the reference config's own record SD.
+
+        Estimated from the reference configuration's data alone (station
+        means + rupture effect + cell residual; see
+        :mod:`apeBayes.analysis.reference`), with ``cfg.sampling``. The
+        separate posterior is resampled (seeded, with replacement) to the
+        main posterior's S draws so it can serve as a β denominator
+        (``denominator="rtr"``); the two posteriors are treated as
+        independent. Cached; ``refit=True`` re-estimates.
+        """
+        from .analysis.reference import reference_record_sd
+
+        if refit or getattr(self, "_rtr_cache", None) is None:
+            draws = reference_record_sd(self.data, self.cfg.sampling)
+            S = self.posterior.n_samples
+            rng = np.random.default_rng(self.cfg.sampling.seed)
+            self._rtr_cache = draws[rng.integers(0, draws.size, S)]
+        return self._rtr_cache
+
+    def new_record_contrast_var(
+        self,
+        *,
+        n_runs: int | None = None,
+        n_stations: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """(S, K) variances of the k-vs-reference contrast for new records.
+
+        See :func:`apeBayes.analysis.equivalence.new_record_contrast_var`.
+        Defaults: a new set the size of this one (``n_runs`` ruptures ×
+        ``n_stations`` stations). Zero for v1–v3 and for configs in the
+        reference's own Case (their record terms are shared exactly).
+        """
+        p = self.posterior
+        d = self.data
+        if p.lambda_case() is None and not p.has_case_record_terms:
+            z = np.zeros((p.n_samples, d.n_configs))
+            return z, z
+        _, config_to_case, _, ref_case = d.case_mapping()
+        return equivalence.new_record_contrast_var(
+            config_to_case=config_to_case, ref_case=ref_case,
+            sigma_run=p.sigma_run(), lambda_case=p.lambda_case(),
+            sigma_inter=p.sigma_inter(), xi_case=p.xi_case(),
+            sigma_u_case=p.sigma_u_case(), sigma_v_case=p.sigma_v_case(),
+            n_runs=n_runs or d.n_runs, n_stations=n_stations or d.n_stations,
+        )
+
+    def record_discrepancy_table(
+        self,
+        *,
+        configs: list[str] | None = None,
+        denominator: Literal["src", "gm", "pred", "rtr"] = "gm",
+    ) -> pd.DataFrame:
+        r"""Per-record discrepancy SD of each config vs the reference.
+
+        Median equivalence (P_eq) is about Δμ; a config can match the
+        reference on average yet differ record by record. The per-record
+        SD of y_k − y_ref is
+
+        .. math::
+            \mathrm{disc}_k = \sqrt{v^{rec}_k + \sigma_{\varepsilon,k}^2
+                                     + \sigma_{\varepsilon,ref}^2},
+
+        with :math:`v^{rec}_k` the unshared record variance (λ, ξ, u, v
+        terms; see :meth:`new_record_contrast_var`) and σ_ε the residual
+        scales (Student-t scale, not the ν-inflated SD). Reported in units
+        of the chosen denominator; columns ``disc_{med,lo,hi}``.
+        """
+        p = self.posterior
+        labels, idx = self.data.subset_config_indices(configs)
+        _, v_rec = self.new_record_contrast_var()
+        se = p.sigma_eps()
+        if se.ndim == 1:
+            se = np.repeat(se[:, None], self.data.n_configs, axis=1)
+        ref = p.ref_idx
+        disc = np.sqrt(v_rec + se ** 2 + se[:, [ref]] ** 2)
+        disc[:, ref] = 0.0
+        disc = disc[:, idx] / self._sigma_denom_for(denominator, ref)[:, None]
+        lo, hi = self.cfg.ci
+        return pd.DataFrame({
+            "Config": labels,
+            "disc_med": np.median(disc, axis=0),
+            "disc_lo": np.quantile(disc, lo, axis=0),
+            "disc_hi": np.quantile(disc, hi, axis=0),
+        })
 
     # ── Analysis: headline decision report ───────────────────────────────
 
@@ -798,6 +996,11 @@ class BayesEpistemicModel:
         alpha_eq: float | None = None,
         alpha_ladder: tuple[float, ...] | None = None,
         p_star: float | None = None,
+        record_marginal: bool = False,
+        rope_abs: float | None = None,
+        n_new_runs: int | None = None,
+        n_new_stations: int | None = None,
+        seed: int = 0,
     ) -> pd.DataFrame:
         """Single-shot equivalence decision table per ``uncertanty_measures.md``.
 
@@ -840,6 +1043,22 @@ class BayesEpistemicModel:
             Probability gate: ``P_eq ≥ p_star`` ⇒ ``"equivalent"``,
             ``P_eq ≤ 1 − p_star`` ⇒ ``"inequivalent"``, else
             ``"undecided"``. Defaults to ``cfg.decision.p_star`` (0.95).
+        record_marginal : bool, default False
+            Add the decision for a **new set of records** (a new draw of
+            ``n_new_runs`` ruptures × ``n_new_stations`` stations, default
+            the sizes of this data set): P(|Δμ_k + e_k| < α_eq·σ_GM), with
+            e_k the record-sampling term of the record effects that config k
+            does not share with the reference (λ, ξ, Case×record terms;
+            :meth:`new_record_contrast_var`). Columns
+            ``P_eq_{α_eq}_gm_new``, ``decision_new``. The headline columns
+            are conditional on the records in the data.
+        rope_abs : float, optional
+            Fixed absolute ROPE on the log scale, e.g. ``np.log(1.2)``:
+            adds ``P_abs`` = P(|Δμ_k| < rope_abs) and ``decision_abs``. Unlike
+            α·σ_GM it is not estimated from the same few ruptures.
+        n_new_runs, n_new_stations, seed
+            Size of the hypothetical new record set and the seed of its
+            sampling term (``record_marginal`` only).
 
         Returns
         -------
@@ -852,6 +1071,9 @@ class BayesEpistemicModel:
             - ``P_eq_{\u03b1_eq}_{src,pred}`` (sensitivity at α_eq)
             - ``decision`` (``equivalent`` | ``inequivalent`` | ``undecided``)
             - ``denominator_robust`` (bool)
+            - ``converged`` (bool; the posterior's convergence gate)
+            - optional ``P_eq_{α_eq}_gm_new`` / ``decision_new``,
+              ``P_abs`` / ``decision_abs``
         """
         dec = self.cfg.decision
         if alpha_eq is None:
@@ -868,7 +1090,7 @@ class BayesEpistemicModel:
                 f"alpha_eq ({alpha_eq}) must be in alpha_ladder {alpha_ladder}."
             )
         for d in denominators:
-            if d not in ("src", "gm", "pred"):
+            if d not in ("src", "gm", "pred", "rtr"):
                 raise ValueError(f"Unknown denominator {d!r}")
         if "gm" not in denominators:
             raise ValueError(
@@ -889,8 +1111,6 @@ class BayesEpistemicModel:
         # Pre-compute each requested denominator once.
         denom_arrays: dict[str, np.ndarray] = {}
         for d in denominators:
-            if d not in ("src", "gm", "pred"):
-                raise ValueError(f"Unknown denominator {d!r}")
             denom_arrays[d] = self._sigma_denom_for(d, ref_idx)  # type: ignore[arg-type]
 
         # β summaries per denominator
@@ -937,6 +1157,24 @@ class BayesEpistemicModel:
             robust &= decisions_by_denom[d] == decisions_by_denom[first_d]
         out["denominator_robust"] = robust
 
+        if record_marginal:
+            var_new, _ = self.new_record_contrast_var(
+                n_runs=n_new_runs, n_stations=n_new_stations,
+            )
+            v_sel = var_new[:, subset_idx] if subset_idx is not None else var_new
+            v_sel = v_sel - var_new[:, [ref_idx]]  # zero: ref vs itself
+            dmu_new = equivalence.record_marginal_dmu(dmu, np.maximum(v_sel, 0.0), seed=seed)
+            p_new = np.mean(np.abs(dmu_new) < alpha_eq * gm_denom[:, None], axis=0)
+            out[f"P_eq_{_fmt(alpha_eq)}_gm_new"] = p_new
+            out["decision_new"] = equivalence.decision_labels(p_new, p_star)
+        if rope_abs is not None:
+            p_abs = np.mean(np.abs(dmu) < rope_abs, axis=0)
+            out["P_abs"] = p_abs
+            out["decision_abs"] = equivalence.decision_labels(p_abs, p_star)
+            out.attrs["rope_abs"] = float(rope_abs)
+
+        out["converged"] = self.converged
+
         return out
 
     # ── Analysis: variance ───────────────────────────────────────────────
@@ -945,39 +1183,95 @@ class BayesEpistemicModel:
         self,
         *,
         include_interaction: bool | None = None,
+        kind: Literal["superpopulation", "finite"] = "superpopulation",
     ) -> pd.DataFrame:
-        """Posterior variance budget.
+        r"""Posterior variance budget of one observation.
 
         Parameters
         ----------
         include_interaction : bool, optional
-            If True, add a fifth "Interaction Var(γ_sr)" row (requires
-            a v8+ interaction model).  If None (default), include it
-            automatically when the posterior contains ``gamma_sr``.
-            If False, always return the legacy 4-row budget for
-            backward compatibility with v1–v7 pipelines.
+            If True, add the station×rupture interaction row (requires a
+            v8+ model). If None (default), include it automatically when
+            the posterior contains ``gamma_sr``. If False, drop it.
+        kind : {"superpopulation", "finite"}, default "superpopulation"
+            - ``"superpopulation"``: fixed factors (configs, stations) by
+              the variance of their realised levels over the observation
+              mix; random factors by their model scale, loaded by λ_case /
+              ξ_case and averaged over the observation mix
+              (E[λ²]σ²_run, E[ξ²]σ²_inter, E[σ²_u], E[σ²_v]); residual
+              E[σ²_ε]·ν/(ν−2). See :func:`analysis.variance.variance_budget`.
+            - ``"finite"``: every row is the variance over the observations
+              of the *realised* term in this data set (config, station,
+              λ·b, ξ·γ, u, v) and the residual is Var(y − μ) per draw.
+
+        Shares (``pct_*``) are computed per draw and then summarised.
         """
         p = self.posterior
+        d = self.data
         if include_interaction is None:
             include_interaction = p.has_interaction
-        gamma = p.gamma_sr() if include_interaction else None
-        return variance.variance_budget(
+        lam = p.lambda_case()
+        xi = p.xi_case()
+        c_obs = p._case_idx_obs()
+
+        if kind == "finite":
+            comps: list[tuple[str, np.ndarray]] = [
+                ("Config spread  Var(μ_config)", np.var(p.mu_config()[:, d.config_idx], axis=1)),
+                ("Station spread Var(δ_s)", np.var(p.delta_st()[:, d.station_idx], axis=1)),
+            ]
+            b = p.b_run()[:, d.run_idx]
+            comps.append((
+                "Run dispersion Var(λ·b)",
+                np.var(b if lam is None else lam[:, c_obs] * b, axis=1),
+            ))
+            g = p.gamma_sr()
+            if include_interaction and g is not None:
+                g_obs = g[:, d.station_idx * d.n_runs + d.run_idx]
+                comps.append((
+                    "Interaction   Var(ξ·γ)",
+                    np.var(g_obs if xi is None else xi[:, c_obs] * g_obs, axis=1),
+                ))
+            if p.has_case_record_terms:
+                comps.append(("Case×rupture  Var(u)", np.var(
+                    p.draws("u_case_run")[:, c_obs, d.run_idx], axis=1)))
+                comps.append(("Case×sta×rup  Var(v)", np.var(
+                    p.draws("v_case_sr")[:, c_obs, d.station_idx, d.run_idx], axis=1)))
+            comps.append((
+                "Residual disp. Var(y−μ)",
+                np.var(d.y[None, :] - p.linear_predictor(), axis=1),
+            ))
+            return self._tag(variance.budget_from_components(comps, ci=self.cfg.ci))
+        if kind != "superpopulation":
+            raise ValueError(f"Unknown kind {kind!r}")
+
+        su = p.sigma_u_case()
+        sv = p.sigma_v_case()
+        return self._tag(variance.variance_budget(
             p.mu_config(), p.delta_st(), p.sigma_run(), p.sigma_eps(),
-            self.data.config_idx, ci=self.cfg.ci, nu=p.nu(),
-            gamma_sr=gamma,
-        )
+            d.config_idx, ci=self.cfg.ci, nu=p.nu(),
+            station_idx=d.station_idx,
+            run_loading_obs=None if lam is None else lam[:, c_obs],
+            sigma_inter=p.sigma_inter() if include_interaction else None,
+            inter_loading_obs=None if xi is None else xi[:, c_obs],
+            sigma_u_obs=None if su is None else su[:, c_obs],
+            sigma_v_obs=None if sv is None else sv[:, c_obs],
+        ))
 
     def variance_component_table(
         self,
         configs: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Compute per-configuration variance components."""
+        """Posterior summaries of σ_run, the residual scale(s) and ν.
+
+        ``configs`` selects (and orders) the per-config residual rows; each
+        row is the residual scale of the config it is labelled with.
+        """
         p = self.posterior
-        labels = configs or p.config_labels
-        return variance.variance_components(
+        labels, subset_idx = self.data.subset_config_indices(configs)
+        return self._tag(variance.variance_components(
             p.sigma_run(), p.sigma_eps(), labels,
-            ci=self.cfg.ci, nu=p.nu(),
-        )
+            ci=self.cfg.ci, nu=p.nu(), subset_idx=subset_idx,
+        ))
 
     # ── Analysis: random-slopes parameters (v4+ λ, v8+ σ_inter, v9+ ξ) ──
 
@@ -1210,6 +1504,7 @@ class BayesEpistemicModel:
         threshold: float | None = None,
         n_clusters: int | None = None,
         denominator: Literal["src", "gm"] = "gm",
+        p_link: float = 0.5,
     ) -> pd.DataFrame:
         r"""Hierarchical clustering of configurations by epistemic distance.
 
@@ -1237,11 +1532,14 @@ class BayesEpistemicModel:
               distances.
         threshold : float, optional
             Distance cutoff for flat clusters. Mutually exclusive with
-            ``n_clusters``. If both are None, defaults to ``1 − α`` so
-            that two configs with ``P_eq < α`` land in the same cluster.
+            ``n_clusters``. If both are None, defaults to ``1 − p_link``.
         n_clusters : int, optional
             If set, cut the linkage tree to produce exactly this many
             flat clusters (``criterion="maxclust"``).
+        p_link : float, default 0.5
+            Default cut: configs join when their linkage-averaged pairwise
+            P_eq exceeds ``p_link``. (Before 0.4.0 the cut was ``1 − α``,
+            mixing the equivalence radius with a probability.)
         denominator : {"src", "gm"}, default "gm"
             Aleatory SD for β. ``"pred"`` is not supported (same pairwise
             ambiguity as :meth:`epistemic_equivalence_matrix`).
@@ -1261,6 +1559,7 @@ class BayesEpistemicModel:
             p.mu_config(), sigma_denom,
             alpha=alpha, labels=labels, subset_idx=subset_idx,
             method=method, threshold=threshold, n_clusters=n_clusters,
+            p_link=p_link,
         )
 
     # ── Analysis: validation parameter ───────────────────────────────────
@@ -1338,19 +1637,25 @@ class BayesEpistemicModel:
     # ── Analysis: fitted values ──────────────────────────────────────────
 
     def fitted_values(self) -> pd.DataFrame:
-        """Compute posterior-mean fitted values and residuals."""
+        """Posterior-mean fitted values and residuals.
+
+        ``yhat_with_run`` is the full linear predictor of the fitted
+        variant (λ_case·b, γ_sr, ξ_case, Case×record terms included).
+        """
         p = self.posterior
-        return fitted.posterior_mean_fitted(
-            self.data.y, p.mu0(), p.mu_config(), p.delta_st(), p.b_run(),
-            self.data.config_idx, self.data.station_idx, self.data.run_idx,
+        return fitted.fitted_from_predictor(
+            self.data.y,
+            p.linear_predictor(include_records=False),
+            p.linear_predictor(),
         )
 
     def r2_table(self) -> pd.DataFrame:
-        """Compute posterior R-squared summary."""
+        """Posterior R² (marginal: fixed part; conditional: full predictor)."""
         p = self.posterior
-        return fitted.posterior_r2(
-            self.data.y, p.mu0(), p.mu_config(), p.delta_st(), p.b_run(),
-            self.data.config_idx, self.data.station_idx, self.data.run_idx,
+        return fitted.r2_from_predictor(
+            self.data.y,
+            p.linear_predictor(include_records=False),
+            p.linear_predictor(),
             ci=self.cfg.ci,
         )
 
@@ -1413,6 +1718,18 @@ class BayesEpistemicModel:
     # adds a small ``"name: <self.name>"`` watermark at the bottom-right
     # of the figure. This makes printed/shared plots self-identify the
     # model that produced them without touching titles or layout.
+
+    def _tag(self, table: pd.DataFrame) -> pd.DataFrame:
+        """Attach the convergence verdict to an exported table.
+
+        Sets ``table.attrs["converged"]`` and ``table.attrs["convergence"]``
+        (the full report). ``decision_report`` additionally carries a
+        ``converged`` column, which survives CSV export.
+        """
+        rep = self.convergence
+        table.attrs["converged"] = bool(rep["converged"])
+        table.attrs["convergence"] = dict(rep)
+        return table
 
     def _stamp(self, result: _R) -> _R:
         """Annotate the figure in ``result`` with ``self.name``; return unchanged.
@@ -2463,8 +2780,10 @@ class BayesEpistemicModel:
             If set, evaluate μ at this specific station (adds δ_{station}
             to μ₀ + μ_config). If None, μ is the population-level mean.
         run_idx : int, optional
-            If set, evaluate μ at this specific rupture (adds b_run).
-            Stacks with ``station_idx``.
+            If set, evaluate μ at this specific rupture: adds the model's
+            full record term for each config (λ_c·b_r, plus γ_sr / ξ /
+            Case×record terms when present; station-specific terms use
+            ``station_idx`` or are averaged over stations).
         original_edp_scale : bool, default False
             If True, exponentiate back to the native EDP scale
             (``exp(μ)``). Leave False for the log-EDP scale used
@@ -2497,8 +2816,10 @@ class BayesEpistemicModel:
                 configs=configs,
                 delta_st=p.delta_st() if station_idx is not None else None,
                 station_idx=station_idx,
-                b_run=p.b_run() if run_idx is not None else None,
-                run_idx=run_idx,
+                record_effect=(
+                    p.record_effect_at(run_idx, station_idx)
+                    if run_idx is not None else None
+                ),
                 original_edp_scale=original_edp_scale,
                 kind=kind, normalize=normalize, n_cols=n_cols,
                 figsize=figsize, out_dir=None, prefix=prefix, filename=filename,
@@ -2813,20 +3134,61 @@ class BayesEpistemicModel:
 
     def compare_variants(
         self,
+        variants: Mapping[str, ModelBuilder] | None = None,
         *,
         ic: str = "loo",
     ) -> tuple[pd.DataFrame, dict[str, FittedVariant]]:
-        """Compare Student-t/Gaussian × hetero/homo variants.
+        """Refit model variants on this data and compare them by LOO / WAIC.
+
+        Parameters
+        ----------
+        variants : dict[str, ModelBuilder], optional
+            Builders to compare, e.g.
+            ``{"v8": RandomSlopesInteractionModel(), "v10": CaseRecordModel()}``.
+            Default: the historical v1 likelihood × residual grid
+            (Student-t / Gaussian × hetero / homo ``FlatConfigModel``).
+        ic : {"loo", "waic"}
 
         Returns the ArviZ comparison table and all fitted variants.
+        PSIS-LOO leaves out single observations; for the record structure
+        use :meth:`leave_one_group_out`.
         """
-        variants = {
-            "StudentT_hetero": FlatConfigModel(likelihood="student_t", heteroskedastic=True),
-            "Gaussian_hetero": FlatConfigModel(likelihood="gaussian", heteroskedastic=True),
-            "StudentT_homo": FlatConfigModel(likelihood="student_t", heteroskedastic=False),
-            "Gaussian_homo": FlatConfigModel(likelihood="gaussian", heteroskedastic=False),
-        }
+        if variants is None:
+            variants = {
+                "StudentT_hetero": FlatConfigModel(likelihood="student_t", heteroskedastic=True),
+                "Gaussian_hetero": FlatConfigModel(likelihood="gaussian", heteroskedastic=True),
+                "StudentT_homo": FlatConfigModel(likelihood="student_t", heteroskedastic=False),
+                "Gaussian_homo": FlatConfigModel(likelihood="gaussian", heteroskedastic=False),
+            }
         return compare_models(self.data, variants, self.cfg, ic=ic)
+
+    def log_likelihood(self) -> InferenceData:
+        """Return the posterior with its ``log_likelihood`` group (computed if absent)."""
+        from .model.comparison import ensure_log_likelihood
+
+        return ensure_log_likelihood(self.idata, self.builder, self.data, self.cfg)
+
+    def leave_one_group_out(
+        self,
+        *,
+        group: Literal["run", "station"] = "run",
+        builder: ModelBuilder | None = None,
+        folds: list[str] | None = None,
+        max_draws: int | None = 1000,
+    ) -> pd.DataFrame:
+        """Leave-one-rupture-out (or station-out) CV of this model's builder.
+
+        Refits once per left-out group with a Gaussian likelihood and scores
+        the held-out block by its exact joint marginal density; see
+        :func:`apeBayes.model.cv.leave_one_group_out`. Compare builders with
+        :func:`apeBayes.model.cv.compare_logo`.
+        """
+        from .model.cv import leave_one_group_out
+
+        return leave_one_group_out(
+            self._df, self.cfg, builder or self.builder,
+            group=group, folds=folds, max_draws=max_draws,
+        )
 
     # ── Repr ─────────────────────────────────────────────────────────────
 
@@ -2844,3 +3206,29 @@ class BayesEpistemicModel:
             f"  likelihood: {self.cfg.likelihood}, "
             f"hetero: {self.cfg.heteroskedastic}"
         )
+
+
+# ── Convergence flag on every exported table ─────────────────────────────
+
+_TAGGED_TABLES = (
+    "standardized_bias_table", "bias_probability_table",
+    "epistemic_median_ratio_table", "decision_report", "variance_budget_table",
+    "record_discrepancy_table",
+    "variance_component_table", "lambda_case_table", "xi_case_table",
+    "sigma_inter_table", "sigma_rupture_table", "axiswise_decomposition_table",
+    "equivalence_probability_table", "equivalence_sweep_table",
+    "epistemic_clusters_table", "validation_decision_table", "r2_table",
+    "mu_hat_table", "delta_hat_table", "fitted_values",
+)
+
+
+def _tagged(fn: Any) -> Any:
+    @functools.wraps(fn)
+    def wrapper(self: BayesEpistemicModel, *args: Any, **kwargs: Any) -> Any:
+        out = fn(self, *args, **kwargs)
+        return self._tag(out) if isinstance(out, pd.DataFrame) else out
+    return wrapper
+
+
+for _name in _TAGGED_TABLES:
+    setattr(BayesEpistemicModel, _name, _tagged(getattr(BayesEpistemicModel, _name)))
