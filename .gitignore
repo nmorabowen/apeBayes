@@ -6,3 +6,12 @@ __pycache__/
 dist/
 build/
 .eggs/
+
+# Agent session scratch and worktrees stay out; task guides in
+# .claude/skills/ are tracked source (see AGENTS.md).
+.claude/*
+!.claude/skills/
+
+# Editor atomic-write leftovers (<file>.tmp.<pid>.<ms>); committed twice,
+# removed in eb57b04 and 874efba.
+*.tmp.[0-9]*
