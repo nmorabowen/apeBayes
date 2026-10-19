@@ -21,10 +21,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-import numpy as np
 import pymc as pm
 
 if TYPE_CHECKING:
+    import numpy as np
     import pytensor.tensor as pt
 
 ZeroSum = Literal["last", "zsn"]

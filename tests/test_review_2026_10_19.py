@@ -6,9 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from review_helpers import point_mass_model, truth
-
 
 # ── A2: linear predictor includes λ_case, γ_sr (and v10 u, v) ───────────
 
@@ -48,9 +46,9 @@ def test_variance_budget_run_row_is_lambda_weighted():
     m = point_mass_model(t)
     vb = m.variance_budget_table().set_index("component")
     lam2 = np.mean(t["lambda_case"] ** 2)  # balanced: each Case is 1/4 of obs
-    run = vb.loc[[i for i in vb.index if i.startswith("Run")][0]]
+    run = vb.loc[next(i for i in vb.index if i.startswith("Run"))]
     assert run["var_med"] == pytest.approx(lam2 * 0.5 ** 2)
-    inter = vb.loc[[i for i in vb.index if i.startswith("Interaction")][0]]
+    inter = vb.loc[next(i for i in vb.index if i.startswith("Interaction"))]
     assert inter["var_med"] == pytest.approx(0.2 ** 2)
     assert vb["pct_mean"].sum() == pytest.approx(100.0)
     # per-draw shares: with a point-mass posterior they equal var / total
@@ -114,8 +112,9 @@ def _default_builders():
 @pytest.mark.parametrize("name", list(_MAIN_GRAPHS))
 def test_default_builder_graph_unchanged(name):
     """Same free variables, same order, same log-density as the published code."""
-    from apeBayes.data import encode_dataset
     from review_helpers import crossed_config, crossed_df
+
+    from apeBayes.data import encode_dataset
 
     d = encode_dataset(crossed_df(truth(), noise=True), crossed_config())
     m = _default_builders()[name].build(d, crossed_config())
@@ -130,10 +129,10 @@ def test_default_builder_graph_unchanged(name):
 
 def test_zsn_prior_is_symmetric_and_double_zero_sum():
     import pymc as pm
+    from review_helpers import crossed_config, crossed_df
 
     from apeBayes.data import encode_dataset
     from apeBayes.model import RandomSlopesInteractionModel
-    from review_helpers import crossed_config, crossed_df
 
     d = encode_dataset(crossed_df(truth(), noise=True), crossed_config())
     m = RandomSlopesInteractionModel(zero_sum="zsn").build(d, crossed_config())
@@ -156,10 +155,10 @@ def test_zsn_prior_is_symmetric_and_double_zero_sum():
 def test_last_scheme_prior_is_asymmetric():
     """Documents the published scheme: last rupture has a sqrt(5)x wider prior."""
     import pymc as pm
+    from review_helpers import crossed_config, crossed_df
 
     from apeBayes.data import encode_dataset
     from apeBayes.model import RandomSlopesInteractionModel
-    from review_helpers import crossed_config, crossed_df
 
     d = encode_dataset(crossed_df(truth(), noise=True), crossed_config())
     with RandomSlopesInteractionModel().build(d, crossed_config()):
@@ -274,8 +273,9 @@ def test_fit_without_builder_warns(monkeypatch):
 # ── A7: separability_check reports λ-relevant SDs and correlation CIs ───
 
 def test_separability_check_sd_ratio_sees_lambda_correlation_does_not():
-    from apeBayes import separability_check
     from review_helpers import crossed_config, crossed_df
+
+    from apeBayes import separability_check
 
     t = truth()
     t["gamma_sr"] = np.zeros_like(t["gamma_sr"])
@@ -304,7 +304,7 @@ def test_plot_variance_ratio_homoskedastic_divides_by_sigma_src():
     matplotlib.use("Agg")
     from apeBayes.plots.variance import plot_variance_ratio
 
-    fig, ax = plot_variance_ratio(np.full(200, 2.0), np.full(200, 0.5), ["1A", "1B"])
+    _, ax = plot_variance_ratio(np.full(200, 2.0), np.full(200, 0.5), ["1A", "1B"])
     xs = ax.collections[0].get_offsets()[:, 0]
     np.testing.assert_allclose(xs, 0.25)
 
@@ -316,9 +316,9 @@ def test_plot_variance_ratio_keeps_label_column_pairing():
 
     S = 100
     sig = np.column_stack([np.full(S, 0.4), np.full(S, 0.1)])  # labels 2A, 1A
-    fig, ax = plot_variance_ratio(np.ones(S), sig, ["2A", "1A"])
+    _, ax = plot_variance_ratio(np.ones(S), sig, ["2A", "1A"])
     ticks = [t.get_text() for t in ax.get_yticklabels()]
-    xs = dict(zip(ticks, ax.collections[0].get_offsets()[:, 0]))
+    xs = dict(zip(ticks, ax.collections[0].get_offsets()[:, 0], strict=True))
     assert xs["1A"] == pytest.approx(0.1) and xs["2A"] == pytest.approx(0.4)
 
 
@@ -337,8 +337,9 @@ def test_cluster_threshold_does_not_reuse_alpha():
 
 
 def test_empty_config_warns_and_empty_reference_raises():
-    from apeBayes.data import encode_dataset
     from review_helpers import crossed_config, crossed_df
+
+    from apeBayes.data import encode_dataset
 
     df = crossed_df(truth())
     with pytest.warns(UserWarning, match="no observations"):

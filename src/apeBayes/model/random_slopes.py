@@ -142,7 +142,7 @@ class RandomSlopesModel:
         self._zero_sum = zero_sum
 
     def options(self) -> dict:
-        """Constructor keyword arguments that reproduce this builder."""
+        """Return the constructor keyword arguments that reproduce this builder."""
         return {
             "sigma_lambda": self._sigma_lambda,
             "centered_runs": self._centered_runs,

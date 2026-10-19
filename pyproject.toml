@@ -124,3 +124,8 @@ disable_error_code = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "sampling: runs short MCMC fits on synthetic data (a few minutes); deselect with -m 'not sampling'",
+    "slow: long MCMC reproduction of published numbers; run with -m slow",
+]
+addopts = "-m 'not slow'"

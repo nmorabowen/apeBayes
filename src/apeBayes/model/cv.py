@@ -86,13 +86,13 @@ def _fold_lpd(
     d = post.data
     cfg_lbl = {lbl: i for i, lbl in enumerate(d.config_labels)}
     k = np.array([cfg_lbl[str(v)] for v in _config_labels_of(test, cfg)])
-    case_levels, config_to_case, _, _ = (
-        d.case_mapping() if len(cfg.factors) == 2 else ([""], np.zeros(d.n_configs, int), None, 0)
+    config_to_case = (
+        d.case_mapping()[1] if len(cfg.factors) == 2 else np.zeros(d.n_configs, int)
     )
     c = config_to_case[k]
     S = post.n_samples
     idx = np.arange(S)
-    if max_draws is not None and S > max_draws:
+    if max_draws is not None and max_draws < S:
         idx = np.sort(np.random.default_rng(seed).choice(S, max_draws, replace=False))
 
     lam = post.lambda_case()

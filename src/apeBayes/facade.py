@@ -40,12 +40,11 @@ from .diagnostics.convergence import (
     stored_convergence,
 )
 from .diagnostics.validation import posterior_predictive_check
+from .model.case_record import CaseRecordModel
 from .model.comparison import FittedVariant, compare_models
 from .model.flat import FlatConfigModel
-from .model.hierarchical import HierarchicalConfigModel
 from .model.random_slopes import RandomSlopesModel
 from .model.random_slopes_interaction import RandomSlopesInteractionModel
-from .model.case_record import CaseRecordModel
 from .model.registry import ATTR_KEY as _BUILDER_ATTR
 from .model.registry import builder_from_spec, builder_spec, model_version
 from .model.sampling import sample_model

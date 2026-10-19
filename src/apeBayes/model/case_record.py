@@ -93,7 +93,7 @@ class CaseRecordModel:
         self._likelihood_override = likelihood
 
     def options(self) -> dict:
-        """Constructor keyword arguments that reproduce this builder."""
+        """Return the constructor keyword arguments that reproduce this builder."""
         return {
             "sigma_lambda": self._sigma_lambda,
             "sigma_inter": self._sigma_inter,

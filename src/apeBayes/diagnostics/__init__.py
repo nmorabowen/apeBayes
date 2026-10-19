@@ -16,11 +16,11 @@ __all__ = [
     "ConvergenceWarning",
     "attach_convergence",
     "convergence_report",
-    "stored_convergence",
     "diagnostics_summary",
     "divergences_count",
     "ess_table",
     "posterior_predictive_check",
     "rhat_table",
     "separability_check",
+    "stored_convergence",
 ]

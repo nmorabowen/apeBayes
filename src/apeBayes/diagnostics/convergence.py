@@ -183,7 +183,7 @@ def convergence_report(
         ess_b = az.ess(post, var_names=var_names, method="bulk")
         ess_t = az.ess(post, var_names=var_names, method="tail")
 
-    def _worst(ds, fn) -> tuple[float, str]:
+    def _worst(ds: object, fn: object) -> tuple[float, str]:
         best_val, best_var = float("nan"), ""
         for v in ds.data_vars:
             vals = np.asarray(ds[v].values, dtype=float).ravel()

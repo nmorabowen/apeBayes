@@ -139,7 +139,7 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         self._sigma_xi = sigma_xi
 
     def options(self) -> dict:
-        """Constructor keyword arguments that reproduce this builder."""
+        """Return the constructor keyword arguments that reproduce this builder."""
         return {
             **super().options(),
             "sigma_inter": self._sigma_inter,
@@ -210,7 +210,6 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         # Create unique (station, run) pairs and map each observation
         n_st = data.n_stations
         n_rk = data.n_runs
-        n_inter = n_st * n_rk  # 3 × 6 = 18
 
         # Interaction index: station_idx * n_runs + run_idx
         inter_idx = data.station_idx * n_rk + data.run_idx

@@ -36,7 +36,7 @@ ATTR_KEY = "apebayes_builder"
 
 
 def builder_options(builder: ModelBuilder) -> dict[str, Any]:
-    """Constructor kwargs of a builder (empty-safe for v1–v3)."""
+    """Return the constructor kwargs of a builder (empty-safe for v1–v3)."""
     if hasattr(builder, "options"):
         return dict(builder.options())
     opts: dict[str, Any] = {}
