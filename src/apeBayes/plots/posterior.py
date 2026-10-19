@@ -74,6 +74,7 @@ def plot_mu_density(
     station_idx: int | None = None,
     b_run: np.ndarray | None = None,
     run_idx: int | None = None,
+    record_effect: np.ndarray | None = None,
     original_edp_scale: bool = False,
     kind: Literal["density", "cdf"] = "density",
     normalize: bool = False,
@@ -92,7 +93,13 @@ def plot_mu_density(
     config_labels : length-K list
     configs : subset of labels to plot (default: all)
     delta_st, station_idx : add station effect if both provided
-    b_run, run_idx : add run effect if both provided
+    b_run, run_idx : add the bare run effect b_run[:, run_idx] if both
+        provided (only correct for v1–v3; ignored when ``record_effect``
+        is given)
+    record_effect : (S, K), optional
+        Per-config record term to add (λ_c·b_r + γ + u + v as the model
+        has them; see ``PosteriorAccessor.record_effect_at``). Preferred
+        over ``b_run`` for v4+ models.
     original_edp_scale : exponentiate to natural EDP
     kind : "density" or "cdf"
     normalize : rescale KDE peak to 1
@@ -122,7 +129,9 @@ def plot_mu_density(
 
         if delta_st is not None and station_idx is not None:
             draws = draws + delta_st[:, station_idx]
-        if b_run is not None and run_idx is not None:
+        if record_effect is not None:
+            draws = draws + record_effect[:, k]
+        elif b_run is not None and run_idx is not None:
             draws = draws + b_run[:, run_idx]
 
         draws_plot = to_edp_scale(draws, original_edp_scale)

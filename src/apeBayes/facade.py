@@ -1338,19 +1338,25 @@ class BayesEpistemicModel:
     # ── Analysis: fitted values ──────────────────────────────────────────
 
     def fitted_values(self) -> pd.DataFrame:
-        """Compute posterior-mean fitted values and residuals."""
+        """Posterior-mean fitted values and residuals.
+
+        ``yhat_with_run`` is the full linear predictor of the fitted
+        variant (λ_case·b, γ_sr, ξ_case, Case×record terms included).
+        """
         p = self.posterior
-        return fitted.posterior_mean_fitted(
-            self.data.y, p.mu0(), p.mu_config(), p.delta_st(), p.b_run(),
-            self.data.config_idx, self.data.station_idx, self.data.run_idx,
+        return fitted.fitted_from_predictor(
+            self.data.y,
+            p.linear_predictor(include_records=False),
+            p.linear_predictor(),
         )
 
     def r2_table(self) -> pd.DataFrame:
-        """Compute posterior R-squared summary."""
+        """Posterior R² (marginal: fixed part; conditional: full predictor)."""
         p = self.posterior
-        return fitted.posterior_r2(
-            self.data.y, p.mu0(), p.mu_config(), p.delta_st(), p.b_run(),
-            self.data.config_idx, self.data.station_idx, self.data.run_idx,
+        return fitted.r2_from_predictor(
+            self.data.y,
+            p.linear_predictor(include_records=False),
+            p.linear_predictor(),
             ci=self.cfg.ci,
         )
 
@@ -2463,8 +2469,10 @@ class BayesEpistemicModel:
             If set, evaluate μ at this specific station (adds δ_{station}
             to μ₀ + μ_config). If None, μ is the population-level mean.
         run_idx : int, optional
-            If set, evaluate μ at this specific rupture (adds b_run).
-            Stacks with ``station_idx``.
+            If set, evaluate μ at this specific rupture: adds the model's
+            full record term for each config (λ_c·b_r, plus γ_sr / ξ /
+            Case×record terms when present; station-specific terms use
+            ``station_idx`` or are averaged over stations).
         original_edp_scale : bool, default False
             If True, exponentiate back to the native EDP scale
             (``exp(μ)``). Leave False for the log-EDP scale used
@@ -2497,8 +2505,10 @@ class BayesEpistemicModel:
                 configs=configs,
                 delta_st=p.delta_st() if station_idx is not None else None,
                 station_idx=station_idx,
-                b_run=p.b_run() if run_idx is not None else None,
-                run_idx=run_idx,
+                record_effect=(
+                    p.record_effect_at(run_idx, station_idx)
+                    if run_idx is not None else None
+                ),
                 original_edp_scale=original_edp_scale,
                 kind=kind, normalize=normalize, n_cols=n_cols,
                 figsize=figsize, out_dir=None, prefix=prefix, filename=filename,
