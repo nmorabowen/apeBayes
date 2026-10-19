@@ -233,3 +233,74 @@ def epistemic_clusters(
         "cluster": cluster_ids.astype(int),
         "leaf_order": [leaf_rank[i] for i in range(M)],
     }).sort_values(["cluster", "leaf_order"]).reset_index(drop=True)
+
+
+# ── New-record (record-marginal) contrasts ─────────────────────────────────
+
+def new_record_contrast_var(
+    *,
+    config_to_case: np.ndarray,
+    ref_case: int,
+    sigma_run: np.ndarray,
+    lambda_case: np.ndarray | None = None,
+    sigma_inter: np.ndarray | None = None,
+    xi_case: np.ndarray | None = None,
+    sigma_u_case: np.ndarray | None = None,
+    sigma_v_case: np.ndarray | None = None,
+    n_runs: int = 6,
+    n_stations: int = 3,
+) -> tuple[np.ndarray, np.ndarray]:
+    r"""Per-record discrepancy variance of config k vs the reference.
+
+    The record terms the model does *not* share between config k (Case c)
+    and the reference (Case ref) make the k-vs-ref difference vary from
+    record to record. Per record, that variance is
+
+    .. math::
+        v^{rup}_k = (\lambda_c - \lambda_{ref})^2 \sigma_{run}^2
+                    + [c \ne ref](\sigma_{u,c}^2 + \sigma_{u,ref}^2),\qquad
+        v^{cell}_k = (\xi_c - \xi_{ref})^2 \sigma_{inter}^2
+                    + [c \ne ref](\sigma_{v,c}^2 + \sigma_{v,ref}^2).
+
+    Averaged over a new set of ``n_runs`` ruptures × ``n_stations``
+    stations, the contrast Δμ_k picks up a sampling term with variance
+    ``v_rup / n_runs + v_cell / (n_runs · n_stations)`` (2026-10-19
+    critique, H5).
+
+    Returns
+    -------
+    (var_new, var_record) : two (S, K) arrays
+        ``var_new``: variance of the record-averaged contrast for a new
+        record set. ``var_record``: per-record variance ``v_rup + v_cell``
+        (the record-level discrepancy, without residuals).
+    """
+    S = sigma_run.shape[0]
+    K = len(config_to_case)
+    c = np.asarray(config_to_case)
+    diff_c = (c != ref_case).astype(float)[None, :]
+    v_rup = np.zeros((S, K))
+    v_cell = np.zeros((S, K))
+    if lambda_case is not None:
+        v_rup += (lambda_case[:, c] - lambda_case[:, [ref_case]]) ** 2 * sigma_run[:, None] ** 2
+    if sigma_inter is not None and xi_case is not None:
+        v_cell += (xi_case[:, c] - xi_case[:, [ref_case]]) ** 2 * sigma_inter[:, None] ** 2
+    if sigma_u_case is not None:
+        v_rup += diff_c * (sigma_u_case[:, c] ** 2 + sigma_u_case[:, [ref_case]] ** 2)
+    if sigma_v_case is not None:
+        v_cell += diff_c * (sigma_v_case[:, c] ** 2 + sigma_v_case[:, [ref_case]] ** 2)
+    var_new = v_rup / n_runs + v_cell / (n_runs * n_stations)
+    return var_new, v_rup + v_cell
+
+
+def record_marginal_dmu(
+    dmu: np.ndarray, var_new: np.ndarray, *, seed: int = 0,
+) -> np.ndarray:
+    """Δμ for a new record set: ``dmu + sqrt(var_new) · z`` per draw (seeded)."""
+    z = np.random.default_rng(seed).standard_normal(dmu.shape)
+    return dmu + np.sqrt(var_new) * z
+
+
+def decision_labels(p_eq: np.ndarray, p_star: float) -> np.ndarray:
+    """``equivalent`` / ``inequivalent`` / ``undecided`` from P_eq and the P* gate."""
+    return np.where(p_eq >= p_star, "equivalent",
+                    np.where(p_eq <= 1.0 - p_star, "inequivalent", "undecided"))

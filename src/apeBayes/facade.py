@@ -885,7 +885,7 @@ class BayesEpistemicModel:
         )
 
     def _sigma_denom_for(
-        self, denominator: Literal["src", "gm", "pred"], ref_idx: int,
+        self, denominator: Literal["src", "gm", "pred", "rtr"], ref_idx: int,
     ) -> np.ndarray:
         """Resolve the requested aleatory denominator to an (S,) array."""
         if denominator == "src":
@@ -894,7 +894,97 @@ class BayesEpistemicModel:
             return self.sigma_GM_draws()
         if denominator == "pred":
             return self.sigma_pred_draws(ref_idx=ref_idx)
+        if denominator == "rtr":
+            return self.sigma_rtr_ref_draws()
         raise ValueError(f"Unknown denominator {denominator!r}")
+
+    # ── Reference record-to-record SD, new-record contrasts ──────────────
+
+    def sigma_rtr_ref_draws(self, *, refit: bool = False) -> np.ndarray:
+        """(S,) draws of σ_RTR,ref: the reference config's own record SD.
+
+        Estimated from the reference configuration's data alone (station
+        means + rupture effect + cell residual; see
+        :mod:`apeBayes.analysis.reference`), with ``cfg.sampling``. The
+        separate posterior is resampled (seeded, with replacement) to the
+        main posterior's S draws so it can serve as a β denominator
+        (``denominator="rtr"``); the two posteriors are treated as
+        independent. Cached; ``refit=True`` re-estimates.
+        """
+        from .analysis.reference import reference_record_sd
+
+        if refit or getattr(self, "_rtr_cache", None) is None:
+            draws = reference_record_sd(self.data, self.cfg.sampling)
+            S = self.posterior.n_samples
+            rng = np.random.default_rng(self.cfg.sampling.seed)
+            self._rtr_cache = draws[rng.integers(0, draws.size, S)]
+        return self._rtr_cache
+
+    def new_record_contrast_var(
+        self,
+        *,
+        n_runs: int | None = None,
+        n_stations: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """(S, K) variances of the k-vs-reference contrast for new records.
+
+        See :func:`apeBayes.analysis.equivalence.new_record_contrast_var`.
+        Defaults: a new set the size of this one (``n_runs`` ruptures ×
+        ``n_stations`` stations). Zero for v1–v3 and for configs in the
+        reference's own Case (their record terms are shared exactly).
+        """
+        p = self.posterior
+        d = self.data
+        if p.lambda_case() is None and not p.has_case_record_terms:
+            z = np.zeros((p.n_samples, d.n_configs))
+            return z, z
+        _, config_to_case, _, ref_case = d.case_mapping()
+        return equivalence.new_record_contrast_var(
+            config_to_case=config_to_case, ref_case=ref_case,
+            sigma_run=p.sigma_run(), lambda_case=p.lambda_case(),
+            sigma_inter=p.sigma_inter(), xi_case=p.xi_case(),
+            sigma_u_case=p.sigma_u_case(), sigma_v_case=p.sigma_v_case(),
+            n_runs=n_runs or d.n_runs, n_stations=n_stations or d.n_stations,
+        )
+
+    def record_discrepancy_table(
+        self,
+        *,
+        configs: list[str] | None = None,
+        denominator: Literal["src", "gm", "pred", "rtr"] = "gm",
+    ) -> pd.DataFrame:
+        r"""Per-record discrepancy SD of each config vs the reference.
+
+        Median equivalence (P_eq) is about Δμ; a config can match the
+        reference on average yet differ record by record. The per-record
+        SD of y_k − y_ref is
+
+        .. math::
+            \mathrm{disc}_k = \sqrt{v^{rec}_k + \sigma_{\varepsilon,k}^2
+                                     + \sigma_{\varepsilon,ref}^2},
+
+        with :math:`v^{rec}_k` the unshared record variance (λ, ξ, u, v
+        terms; see :meth:`new_record_contrast_var`) and σ_ε the residual
+        scales (Student-t scale, not the ν-inflated SD). Reported in units
+        of the chosen denominator; columns ``disc_{med,lo,hi}``.
+        """
+        p = self.posterior
+        labels, idx = self.data.subset_config_indices(configs)
+        _, v_rec = self.new_record_contrast_var()
+        se = p.sigma_eps()
+        if se.ndim == 1:
+            se = np.repeat(se[:, None], self.data.n_configs, axis=1)
+        ref = p.ref_idx
+        disc = np.sqrt(v_rec + se ** 2 + se[:, [ref]] ** 2)
+        disc[:, ref] = 0.0
+        disc = disc[:, idx] / self._sigma_denom_for(denominator, ref)[:, None]
+        lo, hi = self.cfg.ci
+        return pd.DataFrame({
+            "Config": labels,
+            "disc_med": np.median(disc, axis=0),
+            "disc_lo": np.quantile(disc, lo, axis=0),
+            "disc_hi": np.quantile(disc, hi, axis=0),
+        })
 
     # ── Analysis: headline decision report ───────────────────────────────
 
@@ -907,6 +997,11 @@ class BayesEpistemicModel:
         alpha_eq: float | None = None,
         alpha_ladder: tuple[float, ...] | None = None,
         p_star: float | None = None,
+        record_marginal: bool = False,
+        rope_abs: float | None = None,
+        n_new_runs: int | None = None,
+        n_new_stations: int | None = None,
+        seed: int = 0,
     ) -> pd.DataFrame:
         """Single-shot equivalence decision table per ``uncertanty_measures.md``.
 
@@ -949,6 +1044,22 @@ class BayesEpistemicModel:
             Probability gate: ``P_eq ≥ p_star`` ⇒ ``"equivalent"``,
             ``P_eq ≤ 1 − p_star`` ⇒ ``"inequivalent"``, else
             ``"undecided"``. Defaults to ``cfg.decision.p_star`` (0.95).
+        record_marginal : bool, default False
+            Add the decision for a **new set of records** (a new draw of
+            ``n_new_runs`` ruptures × ``n_new_stations`` stations, default
+            the sizes of this data set): P(|Δμ_k + e_k| < α_eq·σ_GM), with
+            e_k the record-sampling term of the record effects that config k
+            does not share with the reference (λ, ξ, Case×record terms;
+            :meth:`new_record_contrast_var`). Columns
+            ``P_eq_{α_eq}_gm_new``, ``decision_new``. The headline columns
+            are conditional on the records in the data.
+        rope_abs : float, optional
+            Fixed absolute ROPE on the log scale, e.g. ``np.log(1.2)``:
+            adds ``P_abs`` = P(|Δμ_k| < rope_abs) and ``decision_abs``. Unlike
+            α·σ_GM it is not estimated from the same few ruptures.
+        n_new_runs, n_new_stations, seed
+            Size of the hypothetical new record set and the seed of its
+            sampling term (``record_marginal`` only).
 
         Returns
         -------
@@ -961,6 +1072,9 @@ class BayesEpistemicModel:
             - ``P_eq_{\u03b1_eq}_{src,pred}`` (sensitivity at α_eq)
             - ``decision`` (``equivalent`` | ``inequivalent`` | ``undecided``)
             - ``denominator_robust`` (bool)
+            - ``converged`` (bool; the posterior's convergence gate)
+            - optional ``P_eq_{α_eq}_gm_new`` / ``decision_new``,
+              ``P_abs`` / ``decision_abs``
         """
         dec = self.cfg.decision
         if alpha_eq is None:
@@ -977,7 +1091,7 @@ class BayesEpistemicModel:
                 f"alpha_eq ({alpha_eq}) must be in alpha_ladder {alpha_ladder}."
             )
         for d in denominators:
-            if d not in ("src", "gm", "pred"):
+            if d not in ("src", "gm", "pred", "rtr"):
                 raise ValueError(f"Unknown denominator {d!r}")
         if "gm" not in denominators:
             raise ValueError(
@@ -998,8 +1112,6 @@ class BayesEpistemicModel:
         # Pre-compute each requested denominator once.
         denom_arrays: dict[str, np.ndarray] = {}
         for d in denominators:
-            if d not in ("src", "gm", "pred"):
-                raise ValueError(f"Unknown denominator {d!r}")
             denom_arrays[d] = self._sigma_denom_for(d, ref_idx)  # type: ignore[arg-type]
 
         # β summaries per denominator
@@ -1045,6 +1157,23 @@ class BayesEpistemicModel:
         for d in denominators[1:]:
             robust &= decisions_by_denom[d] == decisions_by_denom[first_d]
         out["denominator_robust"] = robust
+
+        if record_marginal:
+            var_new, _ = self.new_record_contrast_var(
+                n_runs=n_new_runs, n_stations=n_new_stations,
+            )
+            v_sel = var_new[:, subset_idx] if subset_idx is not None else var_new
+            v_sel = v_sel - var_new[:, [ref_idx]]  # zero: ref vs itself
+            dmu_new = equivalence.record_marginal_dmu(dmu, np.maximum(v_sel, 0.0), seed=seed)
+            p_new = np.mean(np.abs(dmu_new) < alpha_eq * gm_denom[:, None], axis=0)
+            out[f"P_eq_{_fmt(alpha_eq)}_gm_new"] = p_new
+            out["decision_new"] = equivalence.decision_labels(p_new, p_star)
+        if rope_abs is not None:
+            p_abs = np.mean(np.abs(dmu) < rope_abs, axis=0)
+            out["P_abs"] = p_abs
+            out["decision_abs"] = equivalence.decision_labels(p_abs, p_star)
+            out.attrs["rope_abs"] = float(rope_abs)
+
         out["converged"] = self.converged
 
         return out
@@ -3085,6 +3214,7 @@ class BayesEpistemicModel:
 _TAGGED_TABLES = (
     "standardized_bias_table", "bias_probability_table",
     "epistemic_median_ratio_table", "decision_report", "variance_budget_table",
+    "record_discrepancy_table",
     "variance_component_table", "lambda_case_table", "xi_case_table",
     "sigma_inter_table", "sigma_rupture_table", "axiswise_decomposition_table",
     "equivalence_probability_table", "equivalence_sweep_table",

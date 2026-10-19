@@ -145,7 +145,9 @@ class SamplingConfig:
 #   src  -> σ_src                         (v6-era conservative)
 #   gm   -> σ_GM = √(σ_src² + σ_inter²)   (canonical, v8)
 #   pred -> σ_pred (adds residual)        (full-predictive generous)
-_ALLOWED_DENOMINATORS: tuple[str, ...] = ("src", "gm", "pred")
+#   rtr  -> σ_RTR,ref, the reference config's own record-to-record SD
+#           estimated from its data alone (analysis/reference.py; 0.4.0)
+_ALLOWED_DENOMINATORS: tuple[str, ...] = ("src", "gm", "pred", "rtr")
 
 
 @dataclass(frozen=True)
@@ -165,9 +167,11 @@ class DecisionConfig:
         Probability gate for the equivalence call. Must lie in ``(0, 1)``.
         Default 0.95 matches moderate-consequence reliability conventions.
     denominators : tuple[str, ...]
-        Subset of ``{"src", "gm", "pred"}`` indicating which β variants to
-        compute. ``"gm"`` is canonical; ``"src"`` and ``"pred"`` are the
-        sensitivity endpoints.
+        Subset of ``{"src", "gm", "pred", "rtr"}`` indicating which β
+        variants to compute. ``"gm"`` is canonical; ``"src"`` and ``"pred"``
+        are the sensitivity endpoints; ``"rtr"`` (opt-in, it fits a small
+        extra model) is the reference config's directly estimated
+        record-to-record SD.
     """
 
     alpha_eq: float = 0.4

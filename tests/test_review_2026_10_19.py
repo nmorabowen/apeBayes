@@ -383,3 +383,67 @@ def test_logo_run_marginal_matches_monte_carlo(case_terms):
     C = np.cov(rec, rowvar=False) + np.diag(np.full(len(k), 0.3 ** 2))
     ref = multivariate_normal(mean, C).logpdf(test.edp.to_numpy())
     assert lpd == pytest.approx(ref, abs=0.1)
+
+
+# ── C extras: new-record equivalence, absolute ROPE, σ_RTR,ref ──────────
+
+def test_new_record_contrast_var_formula():
+    t = truth(case_terms=True)
+    m = point_mass_model(t)
+    var_new, var_rec = m.new_record_contrast_var()
+    k_1a, k_1d = 0, 3
+    lam, su, sv = t["lambda_case"], t["sigma_u_case"], t["sigma_v_case"]
+    v_rup = (lam[0] - lam[3]) ** 2 * t["sigma_run"] ** 2 + su[0] ** 2 + su[3] ** 2
+    v_cell = sv[0] ** 2 + sv[3] ** 2
+    assert var_new[0, k_1a] == pytest.approx(v_rup / 6 + v_cell / 18)
+    assert var_rec[0, k_1a] == pytest.approx(v_rup + v_cell)
+    assert var_new[0, k_1d] == 0.0  # same Case as the reference: shared terms
+
+
+def test_decision_report_record_marginal_and_absolute_rope():
+    t = truth(case_terms=True)
+    m = point_mass_model(t, jitter=0.02, n_draws=400)
+    rep = m.decision_report(record_marginal=True, rope_abs=np.log(1.2))
+    for col in ("P_eq_0.4_gm_new", "decision_new", "P_abs", "decision_abs", "converged"):
+        assert col in rep.columns
+    row = rep.set_index("Config")
+    assert row.loc["4D", "P_abs"] == 1.0 and row.loc["4D", "P_eq_0.4_gm_new"] == 1.0
+    # the new-record term only widens the contrast: P_eq moves toward 0.5
+    k = "1A"
+    p_c, p_n = row.loc[k, "P_eq_0.4_gm"], row.loc[k, "P_eq_0.4_gm_new"]
+    assert abs(p_n - 0.5) <= abs(p_c - 0.5) + 0.02
+
+
+def test_record_discrepancy_table():
+    t = truth(case_terms=True)
+    m = point_mass_model(t)
+    tab = m.record_discrepancy_table().set_index("Config")
+    assert tab.loc["4D", "disc_med"] == 0.0
+    _, v_rec = m.new_record_contrast_var()
+    gm = m.sigma_GM_draws()[0]
+    want = np.sqrt(v_rec[0, 0] + t["sigma_eps"][0] ** 2 + t["sigma_eps"][15] ** 2) / gm
+    assert tab.loc["1A", "disc_med"] == pytest.approx(want)
+
+
+def test_case_record_sigma_gm_formula():
+    from apeBayes.model import CaseRecordModel
+
+    t = truth(case_terms=True)
+    m = point_mass_model(t)
+    gm = CaseRecordModel().sigma_GM(m.posterior)[0]
+    want = np.sqrt(t["sigma_run"] ** 2 + t["sigma_inter"] ** 2
+                   + t["sigma_u_case"][3] ** 2 + t["sigma_v_case"][3] ** 2)
+    assert gm == pytest.approx(want)
+
+
+def test_reference_record_sd_moment():
+    from apeBayes.analysis.reference import reference_record_sd_moment
+
+    m = point_mass_model(truth())
+    d = m.data
+    sel = d.config_idx == d.ref_idx
+    Y = np.zeros((3, 6))
+    Y[d.station_idx[sel], d.run_idx[sel]] = d.y[sel]
+    resid = Y - Y.mean(1, keepdims=True)
+    want = np.sqrt((resid ** 2).sum() / (18 - 3))
+    assert reference_record_sd_moment(d) == pytest.approx(want)
