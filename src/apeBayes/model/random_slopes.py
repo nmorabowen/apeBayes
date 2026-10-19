@@ -40,6 +40,8 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import pymc as pm
 
+from ._terms import check_zero_sum
+
 if TYPE_CHECKING:
     from ..config import ModelConfig
     from ..data import EpistemicDataset
@@ -85,6 +87,17 @@ class RandomSlopesModel:
         ``HalfNormal(sigma=residual_tau)``; "halfcauchy" uses
         ``HalfCauchy(beta=residual_tau)`` for a heavier-tailed prior.
         Ignored when ``residual_pooling != "partial"``.
+    residual_log_mean, residual_log_sd : float
+        Prior N(mean, sd) on ``log_sigma_eps_bar`` (the pooled log residual
+        scale) when ``residual_pooling="partial"``. Defaults ln(0.1) and
+        1.5 reproduce the v8.1 prior.
+    zero_sum : {"last", "zsn"}
+        Sum-to-zero scheme for ``mu_config``, ``delta_st`` and ``b_run``
+        (and ``gamma_sr`` in the interaction subclass). "last" (default,
+        reproduces published v4-v9 fits) sets the last level to minus the
+        sum of the others, which gives that level an (n-1)x larger prior
+        variance; "zsn" uses ``pm.ZeroSumNormal`` (symmetric, level-order
+        independent). See ``model/_terms.py``.
     """
 
     def __init__(
@@ -97,7 +110,13 @@ class RandomSlopesModel:
         residual_pooling: Literal["none", "partial"] = "none",
         residual_tau: float = 0.5,
         residual_tau_dist: Literal["halfnormal", "halfcauchy"] = "halfnormal",
+        residual_log_mean: float = float(np.log(0.1)),
+        residual_log_sd: float = 1.5,
+        zero_sum: Literal["last", "zsn"] = "last",
     ) -> None:
+        check_zero_sum(zero_sum)
+        if residual_log_sd <= 0:
+            raise ValueError(f"residual_log_sd must be positive, got {residual_log_sd}")
         if sigma_lambda <= 0:
             raise ValueError(f"sigma_lambda must be positive, got {sigma_lambda}")
         if residual_pooling not in ("none", "partial"):
@@ -118,6 +137,24 @@ class RandomSlopesModel:
         self._residual_pooling = residual_pooling
         self._residual_tau = residual_tau
         self._residual_tau_dist = residual_tau_dist
+        self._residual_log_mean = float(residual_log_mean)
+        self._residual_log_sd = float(residual_log_sd)
+        self._zero_sum = zero_sum
+
+    def options(self) -> dict:
+        """Constructor keyword arguments that reproduce this builder."""
+        return {
+            "sigma_lambda": self._sigma_lambda,
+            "centered_runs": self._centered_runs,
+            "likelihood": self._likelihood_override,
+            "heteroskedastic": self._hetero_override,
+            "residual_pooling": self._residual_pooling,
+            "residual_tau": self._residual_tau,
+            "residual_tau_dist": self._residual_tau_dist,
+            "residual_log_mean": self._residual_log_mean,
+            "residual_log_sd": self._residual_log_sd,
+            "zero_sum": self._zero_sum,
+        }
 
     @property
     def description(self) -> str:
@@ -137,6 +174,12 @@ class RandomSlopesModel:
                 parts.append(f"tau~HalfCauchy({self._residual_tau:g})")
             else:
                 parts.append(f"tau~HalfNormal({self._residual_tau:g})")
+            if (self._residual_log_mean, self._residual_log_sd) != (float(np.log(0.1)), 1.5):
+                parts.append(
+                    f"log_bar~N({self._residual_log_mean:.3g},{self._residual_log_sd:g})"
+                )
+        if self._zero_sum == "zsn":
+            parts.append("zero_sum=zsn")
         return f"RandomSlopes({', '.join(parts)})"
 
     def sigma_GM(self, post: PosteriorAccessor) -> np.ndarray:
@@ -209,6 +252,7 @@ class RandomSlopesModel:
     ) -> pm.Model:
         """Construct the PyMC model with hierarchical config + random slopes."""
         p = cfg.priors
+        zsn = self._zero_sum == "zsn"
         likelihood = self._likelihood_override or cfg.likelihood
         hetero = (
             self._hetero_override
@@ -238,7 +282,12 @@ class RandomSlopesModel:
 
             # ── Configuration effects (sum-to-zero, non-centered) ────────
             n_cfg = data.n_configs
-            if n_cfg > 1:
+            if zsn and n_cfg > 1:
+                z_config = pm.ZeroSumNormal("z_config", sigma=1.0, dims="Config")
+                mu_config = pm.Deterministic(
+                    "mu_config", tau_config * z_config, dims="Config",
+                )
+            elif n_cfg > 1:
                 z_config_free = pm.Normal(
                     "z_config_free",
                     mu=0.0,
@@ -261,7 +310,11 @@ class RandomSlopesModel:
 
             # ── Station effects (sum-to-zero) ────────────────────────────
             n_st = data.n_stations
-            if n_st > 1:
+            if zsn and n_st > 1:
+                delta_st = pm.ZeroSumNormal(
+                    "delta_st", sigma=p.sigma_station, dims="Station",
+                )
+            elif n_st > 1:
                 delta_free = pm.Normal(
                     "delta_st_free",
                     mu=0.0,
@@ -284,7 +337,13 @@ class RandomSlopesModel:
             # ── Run random effects (sum-to-zero) ────────────────────────
             sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_src)
             n_rk = data.n_runs
-            if n_rk > 1:
+            if zsn and n_rk > 1:
+                if self._centered_runs:
+                    b_run = pm.ZeroSumNormal("b_run", sigma=sigma_run, dims="Run")
+                else:
+                    z_run = pm.ZeroSumNormal("z_run", sigma=1.0, dims="Run")
+                    b_run = pm.Deterministic("b_run", sigma_run * z_run, dims="Run")
+            elif n_rk > 1:
                 if self._centered_runs:
                     # Centered: b_run_free ~ N(0, σ_run) directly.
                     # Eliminates the σ_run × z_run product that creates
@@ -364,7 +423,7 @@ class RandomSlopesModel:
             if hetero:
                 if self._residual_pooling == "partial":
                     log_sigma_eps_bar = pm.Normal(
-                        "log_sigma_eps_bar", mu=np.log(0.1), sigma=1.5
+                        "log_sigma_eps_bar", mu=self._residual_log_mean, sigma=self._residual_log_sd
                     )
                     if self._residual_tau_dist == "halfcauchy":
                         tau_sigma_eps = pm.HalfCauchy(

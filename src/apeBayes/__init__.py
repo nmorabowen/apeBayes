@@ -16,6 +16,7 @@ from .data import EpistemicDataset, encode_dataset
 from .diagnostics import separability_check
 from .facade import BayesEpistemicModel
 from .model import (
+    CaseRecordModel,
     FlatConfigModel,
     HierarchicalConfigModel,
     ModelBuilder,
@@ -30,6 +31,7 @@ from .posterior import PosteriorAccessor
 __all__ = [
     # Main entry points
     "BayesEpistemicModel",
+    "CaseRecordModel",
     # Configuration
     "DecisionConfig",
     "EDPSpec",
@@ -55,4 +57,4 @@ __all__ = [
     "separability_check",
 ]
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"

@@ -9,8 +9,10 @@ independently usable.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import tempfile
+import warnings
 import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -28,10 +30,14 @@ from .config import (
 )
 from .data import EpistemicDataset, encode_dataset
 from .diagnostics.convergence import (
+    ConvergenceWarning,
+    attach_convergence,
+    convergence_message,
     diagnostics_summary,
     divergences_count,
     ess_table,
     rhat_table,
+    stored_convergence,
 )
 from .diagnostics.validation import posterior_predictive_check
 from .model.comparison import FittedVariant, compare_models
@@ -39,6 +45,9 @@ from .model.flat import FlatConfigModel
 from .model.hierarchical import HierarchicalConfigModel
 from .model.random_slopes import RandomSlopesModel
 from .model.random_slopes_interaction import RandomSlopesInteractionModel
+from .model.case_record import CaseRecordModel
+from .model.registry import ATTR_KEY as _BUILDER_ATTR
+from .model.registry import builder_from_spec, builder_spec, model_version
 from .model.sampling import sample_model
 from .plots.style import CMAP_DIV, CMAP_SEQ, FULL_WIDTH, HALF_WIDTH
 from .posterior.accessor import PosteriorAccessor
@@ -123,6 +132,7 @@ def _serialize_config(cfg: ModelConfig) -> dict[str, Any]:
                 "max_treedepth": cfg.sampling.max_treedepth,
                 "seed": cfg.sampling.seed,
                 "sampler": cfg.sampling.sampler,
+                "store_log_likelihood": cfg.sampling.store_log_likelihood,
             },
             "decision": {
                 "alpha_eq": cfg.decision.alpha_eq,
@@ -221,51 +231,86 @@ _R = TypeVar("_R")
 
 
 def _variant_tag(builder: ModelBuilder) -> str:
-    """Return a short tag describing the variant class.
+    """Return the lineage tag of a builder (v1-v3, v4-v7, v8, v8.1, v9, v10).
 
-    Used by :func:`_detect_builder` to compare a user-supplied builder
-    against the variant inferred from the posterior.
+    Used by :meth:`BayesEpistemicModel.load` to compare a user-supplied
+    builder against the variant inferred from the posterior.
     """
-    if isinstance(builder, RandomSlopesInteractionModel):
-        # pylint: disable=protected-access
-        return "v9" if getattr(builder, "_interaction_loading", False) else "v8"
-    if isinstance(builder, RandomSlopesModel):
-        return "v4-v7"
-    if isinstance(builder, (HierarchicalConfigModel, FlatConfigModel)):
-        return "v1-v3"
-    return type(builder).__name__
+    return model_version(builder)
+
+
+def _record_builder(idata: InferenceData, builder: ModelBuilder) -> None:
+    """Store the builder spec (class + options) in ``idata.attrs``."""
+    idata.attrs[_BUILDER_ATTR] = json.dumps(builder_spec(builder))
+
+
+def _check_coords(idata: InferenceData, data: EpistemicDataset) -> None:
+    """Raise if the posterior's level coordinates disagree with the data.
+
+    Every index in the posterior (config, station, run) refers to the label
+    order of the dataset it was fitted on. If a re-encoded DataFrame orders
+    or names the levels differently (other ``FactorSpec.levels``, a renamed
+    station, a dropped rupture), every effect would silently be attached to
+    the wrong level.
+    """
+    post = idata.posterior
+    for dim, labels in (
+        ("Config", data.config_labels),
+        ("Station", data.station_labels),
+        ("Run", data.run_labels),
+    ):
+        if dim not in post.coords:
+            continue
+        saved = [str(v) for v in post.coords[dim].values]
+        now = [str(v) for v in labels]
+        if saved != now:
+            raise ValueError(
+                f"Posterior coordinate {dim!r} does not match the re-encoded data: "
+                f"posterior {saved[:6]}... vs data {now[:6]}... The DataFrame / "
+                "ModelConfig passed to load() encodes the levels differently from "
+                "the fit; every effect would be attached to the wrong level."
+            )
 
 
 def _detect_builder(post: PosteriorAccessor) -> tuple[ModelBuilder, str]:
-    """Infer which ModelBuilder produced a posterior from its variable set.
+    """Infer which ModelBuilder produced a posterior.
+
+    If the posterior carries a recorded builder spec
+    (``idata.attrs["apebayes_builder"]``, written by ``fit`` since 0.4.0)
+    that builder is rebuilt with its exact options. Otherwise the variant
+    is inferred from the variable set:
+
+    - ``u_case_run``     present → v10 ``CaseRecordModel``.
+    - ``xi_case``        present → v9 ``RandomSlopesInteractionModel``
+      (σ_GM raises NotImplementedError rather than silently returning
+      the v8 formula).
+    - ``gamma_sr``       present → v8, or v8.1 when the pooled residual
+      prior (``tau_sigma_eps``) is present. The v8.1 spread prior and the
+      zero-sum scheme cannot be recovered from variable names alone (a
+      ``z_inter`` variable implies ``zero_sum="zsn"``).
+    - ``lambda_case``    present → v4-v7 ``RandomSlopesModel``.
+    - otherwise                  → v1-v3; σ_GM is σ_src either way, so
+      ``FlatConfigModel`` is returned.
 
     Returns
     -------
     (builder, tag)
-        A default-constructed builder matching the posterior's variant and
-        the variant tag string (``'v9'`` / ``'v8'`` / ``'v4-v7'`` /
-        ``'v1-v3'``).
-
-    Notes
-    -----
-    Probes used (see ``uncertanty_measures.md`` §7 for the σ_GM formula
-    associated with each variant):
-
-    - ``xi_case``     present → v9 RandomSlopesInteractionModel (guard:
-      σ_GM raises NotImplementedError, but we still want to route there
-      so the error is correct rather than silently returning σ_src).
-    - ``gamma_sr``    present → v8 RandomSlopesInteractionModel.
-    - ``lambda_case`` present → v4-v7 RandomSlopesModel.
-    - otherwise                → v1-v3; σ_GM is σ_src either way so we
-      return FlatConfigModel (HierarchicalConfigModel has identical
-      σ_GM, so the dispatch is equivalent).
     """
+    spec = (getattr(post.idata, "attrs", None) or {}).get(_BUILDER_ATTR)
+    if spec:
+        b = builder_from_spec(spec)
+        return b, model_version(b)
+    zs = "zsn" if post.has_var("z_inter") or post.has_var("z_run") else "last"
+    if post.has_var("u_case_run"):
+        return CaseRecordModel(), "v10"
     if post.has_var("xi_case"):
-        return RandomSlopesInteractionModel(interaction_loading=True), "v9"
+        return RandomSlopesInteractionModel(interaction_loading=True, zero_sum=zs), "v9"
     if post.has_var("gamma_sr"):
-        return RandomSlopesInteractionModel(), "v8"
+        if post.has_var("tau_sigma_eps"):
+            return RandomSlopesInteractionModel(residual_pooling="partial", zero_sum=zs), "v8.1"
+        return RandomSlopesInteractionModel(zero_sum=zs), "v8"
     if post.has_var("lambda_case"):
-        return RandomSlopesModel(), "v4-v7"
+        return RandomSlopesModel(zero_sum=zs), "v4-v7"
     return FlatConfigModel(), "v1-v3"
 
 
@@ -313,22 +358,39 @@ class BayesEpistemicModel:
         builder: ModelBuilder | None = None,
         prior_predictive: bool = True,
         posterior_predictive: bool = True,
+        strict: bool = False,
     ) -> BayesEpistemicModel:
         """Build and sample the model.
 
         Parameters
         ----------
         builder : ModelBuilder, optional
-            Custom model builder.  Defaults to FlatConfigModel with
-            settings from self.cfg.
+            Model builder. **Pass it explicitly.** When omitted, the v1
+            ``FlatConfigModel`` is used (historical default) and a
+            ``FutureWarning`` is issued; the paper models are
+            ``RandomSlopesInteractionModel`` (v8 / v8.1) and
+            ``CaseRecordModel`` (v10).
         prior_predictive : bool
             Sample prior predictive before MCMC.
         posterior_predictive : bool
             Sample posterior predictive after MCMC.
+        strict : bool, default False
+            Convergence gate (max R-hat ≤ 1.01, min bulk/tail ESS ≥ 400,
+            no divergences; see :attr:`convergence`). On failure a
+            ``ConvergenceWarning`` is issued, or ``RuntimeError`` raised
+            when ``strict`` is True. Either way the verdict is stored in
+            ``idata.attrs`` and carried by the exported tables.
 
         Returns self for chaining.
         """
         if builder is None:
+            warnings.warn(
+                "BayesEpistemicModel.fit() without builder= falls back to the v1 "
+                "FlatConfigModel. Pass the builder explicitly (e.g. "
+                "RandomSlopesInteractionModel() for v8, CaseRecordModel() for v10).",
+                FutureWarning,
+                stacklevel=2,
+            )
             builder = FlatConfigModel()
         self._builder = builder
 
@@ -339,9 +401,43 @@ class BayesEpistemicModel:
             prior_predictive=prior_predictive,
             posterior_predictive=posterior_predictive,
         )
+        _record_builder(idata, builder)
         self._posterior = PosteriorAccessor(idata, self.data)
         self._sigma_gm_cache = None
+        self._check_convergence(strict=strict)
         return self
+
+    # ── Convergence gate ────────────────────────────────────────────────
+
+    @property
+    def convergence(self) -> dict:
+        """Convergence verdict of the posterior (see ``convergence_report``).
+
+        Read from ``idata.attrs`` when the fit stored it; computed (and
+        stored) on first access for posteriors saved before 0.4.0.
+        """
+        rep = stored_convergence(self.idata)
+        if rep is None:
+            rep = attach_convergence(self.idata)
+        return rep
+
+    @property
+    def converged(self) -> bool:
+        """True iff the posterior passes the convergence gate."""
+        return bool(self.convergence["converged"])
+
+    def _check_convergence(self, *, strict: bool) -> None:
+        rep = self.convergence
+        if rep["converged"]:
+            return
+        msg = (
+            f"Posterior{' ' + repr(self.name) if self.name else ''} fails the "
+            f"convergence gate: {convergence_message(rep)}. Results are flagged "
+            "converged=False."
+        )
+        if strict:
+            raise RuntimeError(msg)
+        warnings.warn(msg, ConvergenceWarning, stacklevel=3)
 
     @property
     def posterior(self) -> PosteriorAccessor:
@@ -455,7 +551,7 @@ class BayesEpistemicModel:
                 tmp = Path(tmp_str)
                 self.idata.to_netcdf(str(tmp / _BUNDLE_IDATA_NAME))
                 (tmp / _BUNDLE_CONFIG_NAME).write_text(
-                    json.dumps(_serialize_config(self.cfg), indent=2),
+                    json.dumps(self._bundle_payload(), indent=2),
                     encoding="utf-8",
                 )
                 self._df.to_parquet(
@@ -473,13 +569,20 @@ class BayesEpistemicModel:
         bundle_dir.mkdir(parents=True, exist_ok=True)
         self.idata.to_netcdf(str(bundle_dir / _BUNDLE_IDATA_NAME))
         (bundle_dir / _BUNDLE_CONFIG_NAME).write_text(
-            json.dumps(_serialize_config(self.cfg), indent=2),
+            json.dumps(self._bundle_payload(), indent=2),
             encoding="utf-8",
         )
         self._df.to_parquet(
             bundle_dir / _BUNDLE_DATA_NAME, engine="pyarrow", compression="snappy",
         )
         return bundle_dir
+
+    def _bundle_payload(self) -> dict[str, Any]:
+        """config.json contents: the ModelConfig plus the builder spec."""
+        payload = _serialize_config(self.cfg)
+        if self._builder is not None:
+            payload["builder"] = builder_spec(self._builder)
+        return payload
 
     @classmethod
     def load(
@@ -600,8 +703,12 @@ class BayesEpistemicModel:
                 df = pd.read_parquet(data_file)
 
             idata = _read_idata_eager(idata_file)
+            payload_builder = json.loads(cfg_file.read_text(encoding="utf-8")).get("builder")
+            if payload_builder and _BUILDER_ATTR not in idata.attrs:
+                idata.attrs[_BUILDER_ATTR] = json.dumps(payload_builder)
             obj = cls(df, cfg=cfg, name=name)
 
+        _check_coords(idata, obj.data)
         post = PosteriorAccessor(idata, obj.data)
         obj._posterior = post
 
@@ -936,6 +1043,7 @@ class BayesEpistemicModel:
         for d in denominators[1:]:
             robust &= decisions_by_denom[d] == decisions_by_denom[first_d]
         out["denominator_robust"] = robust
+        out["converged"] = self.converged
 
         return out
 
@@ -1477,7 +1585,15 @@ class BayesEpistemicModel:
     # model that produced them without touching titles or layout.
 
     def _tag(self, table: pd.DataFrame) -> pd.DataFrame:
-        """Attach the convergence verdict to an exported table (``attrs``)."""
+        """Attach the convergence verdict to an exported table.
+
+        Sets ``table.attrs["converged"]`` and ``table.attrs["convergence"]``
+        (the full report). ``decision_report`` additionally carries a
+        ``converged`` column, which survives CSV export.
+        """
+        rep = self.convergence
+        table.attrs["converged"] = bool(rep["converged"])
+        table.attrs["convergence"] = dict(rep)
         return table
 
     def _stamp(self, result: _R) -> _R:
@@ -2914,3 +3030,28 @@ class BayesEpistemicModel:
             f"  likelihood: {self.cfg.likelihood}, "
             f"hetero: {self.cfg.heteroskedastic}"
         )
+
+
+# ── Convergence flag on every exported table ─────────────────────────────
+
+_TAGGED_TABLES = (
+    "standardized_bias_table", "bias_probability_table",
+    "epistemic_median_ratio_table", "decision_report", "variance_budget_table",
+    "variance_component_table", "lambda_case_table", "xi_case_table",
+    "sigma_inter_table", "sigma_rupture_table", "axiswise_decomposition_table",
+    "equivalence_probability_table", "equivalence_sweep_table",
+    "epistemic_clusters_table", "validation_decision_table", "r2_table",
+    "mu_hat_table", "delta_hat_table", "fitted_values",
+)
+
+
+def _tagged(fn: Any) -> Any:
+    @functools.wraps(fn)
+    def wrapper(self: BayesEpistemicModel, *args: Any, **kwargs: Any) -> Any:
+        out = fn(self, *args, **kwargs)
+        return self._tag(out) if isinstance(out, pd.DataFrame) else out
+    return wrapper
+
+
+for _name in _TAGGED_TABLES:
+    setattr(BayesEpistemicModel, _name, _tagged(getattr(BayesEpistemicModel, _name)))

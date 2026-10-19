@@ -23,23 +23,25 @@ v9 extension (interaction_loading=True):
   This mirrors the λ_case parameterization exactly.
 
 Identifiability:
-  - 3 stations × 6 ruptures = 18 cells
-  - γ must sum to zero within each station and within each rupture
-  - That's (3 + 6 - 1) = 8 constraints → 10 free parameters
-  - With 16 obs per cell, identifiability is adequate
-  - ξ_case adds 3 free parameters (A, B, C relative to D)
-  - The within-config interaction spread identifies ξ (analogous to
-    how within-config run spread identifies λ)
+  - 3 stations x 6 ruptures = 18 cells
+  - A full interaction would need gamma to sum to zero within every
+    station and every rupture: (3 + 6 - 1) = 8 constraints, leaving 10
+    free parameters.
+  - xi_case adds 3 free parameters (A, B, C relative to D); the
+    within-config interaction spread identifies xi (analogous to how the
+    within-config run spread identifies lambda).
 
-Implementation:
-  Rather than enforcing double sum-to-zero constraints (which creates
-  a complex parameterization), we use a simpler approach:
-  - Create an 18-level random effect indexed by (station, rupture) pairs
-  - Apply a single sum-to-zero constraint (last = -sum of rest)
-  - The main station and rupture effects absorb the marginal means,
-    so γ estimates the residual interaction in practice
-  - σ_inter ~ HalfNormal controls shrinkage toward zero
-  - When interaction_loading=True, ξ_case scales γ_sr per Case
+Implementation (``zero_sum``):
+  - "last" (default, v8/v9 as published): gamma is an 18-level random
+    effect with a SINGLE sum-to-zero constraint over all cells (last cell
+    = -sum of the other 17). Its station and rupture margins are NOT
+    constrained to zero, so gamma can absorb part of the station and
+    rupture main effects, and the 18th cell has a 17x larger prior
+    variance than the others.
+  - "zsn": gamma is a 2-axis ``pm.ZeroSumNormal`` over (Station, Run),
+    i.e. the double sum-to-zero described above.
+  - sigma_inter ~ HalfNormal controls shrinkage toward zero.
+  - When interaction_loading=True, xi_case scales gamma_sr per Case.
 """
 
 from __future__ import annotations
@@ -97,6 +99,10 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         ``HalfNormal(sigma=residual_tau)``; "halfcauchy" uses
         ``HalfCauchy(beta=residual_tau)`` for a heavier-tailed prior.
         Ignored when ``residual_pooling != "partial"``.
+    residual_log_mean, residual_log_sd, zero_sum
+        See :class:`RandomSlopesModel`. With ``zero_sum="zsn"`` the
+        interaction gamma_sr is a 2-axis ``ZeroSumNormal`` over (station,
+        rupture): it sums to zero within every station and every rupture.
     """
 
     def __init__(
@@ -112,6 +118,9 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
         residual_pooling: Literal["none", "partial"] = "none",
         residual_tau: float = 0.5,
         residual_tau_dist: Literal["halfnormal", "halfcauchy"] = "halfnormal",
+        residual_log_mean: float = float(np.log(0.1)),
+        residual_log_sd: float = 1.5,
+        zero_sum: Literal["last", "zsn"] = "last",
     ) -> None:
         super().__init__(
             sigma_lambda=sigma_lambda,
@@ -121,10 +130,22 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
             residual_pooling=residual_pooling,
             residual_tau=residual_tau,
             residual_tau_dist=residual_tau_dist,
+            residual_log_mean=residual_log_mean,
+            residual_log_sd=residual_log_sd,
+            zero_sum=zero_sum,
         )
         self._sigma_inter = sigma_inter
         self._interaction_loading = interaction_loading
         self._sigma_xi = sigma_xi
+
+    def options(self) -> dict:
+        """Constructor keyword arguments that reproduce this builder."""
+        return {
+            **super().options(),
+            "sigma_inter": self._sigma_inter,
+            "interaction_loading": self._interaction_loading,
+            "sigma_xi": self._sigma_xi,
+        }
 
     @property
     def description(self) -> str:
@@ -171,6 +192,7 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
     ) -> pm.Model:
         """Construct the PyMC model with station×rupture interaction."""
         p = cfg.priors
+        zsn = self._zero_sum == "zsn"
         likelihood = self._likelihood_override or cfg.likelihood
         hetero = (
             self._hetero_override
@@ -219,7 +241,12 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
 
             # ── Configuration effects (sum-to-zero, non-centered) ────────
             n_cfg = data.n_configs
-            if n_cfg > 1:
+            if zsn and n_cfg > 1:
+                z_config = pm.ZeroSumNormal("z_config", sigma=1.0, dims="Config")
+                mu_config = pm.Deterministic(
+                    "mu_config", tau_config * z_config, dims="Config",
+                )
+            elif n_cfg > 1:
                 z_config_free = pm.Normal(
                     "z_config_free", mu=0.0, sigma=1.0, dims="Config_free",
                 )
@@ -234,7 +261,11 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
                 )
 
             # ── Station effects (sum-to-zero) ────────────────────────────
-            if n_st > 1:
+            if zsn and n_st > 1:
+                delta_st = pm.ZeroSumNormal(
+                    "delta_st", sigma=p.sigma_station, dims="Station",
+                )
+            elif n_st > 1:
                 delta_free = pm.Normal(
                     "delta_st_free", mu=0.0, sigma=p.sigma_station, dims="Station_free",
                 )
@@ -251,7 +282,13 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
 
             # ── Run random effects (sum-to-zero) ────────────────────────
             sigma_run = pm.HalfNormal("sigma_run", sigma=p.sigma_src)
-            if n_rk > 1:
+            if zsn and n_rk > 1:
+                if self._centered_runs:
+                    b_run = pm.ZeroSumNormal("b_run", sigma=sigma_run, dims="Run")
+                else:
+                    z_run = pm.ZeroSumNormal("z_run", sigma=1.0, dims="Run")
+                    b_run = pm.Deterministic("b_run", sigma_run * z_run, dims="Run")
+            elif n_rk > 1:
                 if self._centered_runs:
                     b_run_free = pm.Normal(
                         "b_run_free", mu=0.0, sigma=sigma_run, dims="Run_free",
@@ -278,15 +315,22 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
 
             # ── Station × Rupture interaction (sum-to-zero, non-centered) ─
             sigma_inter = pm.HalfNormal("sigma_inter", sigma=self._sigma_inter)
-            n_inter - 1
-            z_inter_free = pm.Normal(
-                "z_inter_free", mu=0.0, sigma=1.0, dims="StationRun_free",
-            )
-            z_inter_last = -pm.math.sum(z_inter_free)
-            z_inter = pm.math.concatenate([z_inter_free, z_inter_last[None]])
-            gamma_sr = pm.Deterministic(
-                "gamma_sr", sigma_inter * z_inter, dims="StationRun",
-            )
+            if zsn:
+                z_inter = pm.ZeroSumNormal(
+                    "z_inter", sigma=1.0, dims=("Station", "Run"), n_zerosum_axes=2,
+                )
+                gamma_sr = pm.Deterministic(
+                    "gamma_sr", sigma_inter * z_inter.flatten(), dims="StationRun",
+                )
+            else:
+                z_inter_free = pm.Normal(
+                    "z_inter_free", mu=0.0, sigma=1.0, dims="StationRun_free",
+                )
+                z_inter_last = -pm.math.sum(z_inter_free)
+                z_inter = pm.math.concatenate([z_inter_free, z_inter_last[None]])
+                gamma_sr = pm.Deterministic(
+                    "gamma_sr", sigma_inter * z_inter, dims="StationRun",
+                )
 
             # ── Per-Case run-sensitivity loadings (random slopes) ────────
             if n_cases > 1:
@@ -346,7 +390,7 @@ class RandomSlopesInteractionModel(RandomSlopesModel):
             if hetero:
                 if self._residual_pooling == "partial":
                     log_sigma_eps_bar = pm.Normal(
-                        "log_sigma_eps_bar", mu=np.log(0.1), sigma=1.5
+                        "log_sigma_eps_bar", mu=self._residual_log_mean, sigma=self._residual_log_sd
                     )
                     if self._residual_tau_dist == "halfcauchy":
                         tau_sigma_eps = pm.HalfCauchy(

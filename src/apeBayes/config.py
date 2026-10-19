@@ -95,6 +95,9 @@ class SamplingConfig:
     max_treedepth : int, default 12
         NUTS max tree depth. Raise (e.g., to 15) if the sampler hits
         the limit frequently; lower to 10 for well-behaved models.
+        Honoured by both backends since 0.4.0 (nutpie receives it as
+        ``maxdepth``; before 0.4.0 nutpie silently used its default 10, so
+        set 10 to reproduce a pre-0.4.0 nutpie fit draw for draw).
     seed : int, default 123
         RNG seed for reproducibility.
     sampler : {"nutpie", "pymc"}, default "nutpie"
@@ -106,6 +109,14 @@ class SamplingConfig:
         - ``"pymc"`` — PyMC's built-in NUTS. Slower but has no extra
           dependency. Use if ``nutpie`` isn't importable or if you need
           features it doesn't support (e.g., some custom step methods).
+
+        A missing ``nutpie`` falls back to PyMC with a warning and is
+        recorded in ``idata.attrs["sampler_fallback"]``; a nutpie runtime
+        error is raised, never silently replaced.
+    store_log_likelihood : bool, default True
+        Store the pointwise log-likelihood group (needed by LOO / WAIC in
+        ``compare_models``). Costs N × chains × draws floats in the saved
+        posterior; set False for very long canonical runs if not needed.
     """
 
     draws: int = 2000
@@ -115,6 +126,7 @@ class SamplingConfig:
     max_treedepth: int = 12
     seed: int = 123
     sampler: Literal["nutpie", "pymc"] = "nutpie"
+    store_log_likelihood: bool = True
 
     def __post_init__(self) -> None:
         if self.draws < 1:
