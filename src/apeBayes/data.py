@@ -128,6 +128,33 @@ class EpistemicDataset:
             int(config_to_case[self.ref_idx]),
         )
 
+    def tier_mapping(self) -> tuple[list[str], np.ndarray, np.ndarray]:
+        """Return the Tier structure of a two-factor (Tier × Case) design.
+
+        The first factor is the "Tier" (the factor of the v11 Tier×station
+        term), the counterpart of :meth:`case_mapping`.
+
+        Returns
+        -------
+        tier_levels : list[str]
+            Ordered Tier labels.
+        config_to_tier : np.ndarray, shape (n_configs,)
+            Config index → Tier index.
+        tier_idx_obs : np.ndarray, shape (n_obs,)
+            Tier index of each observation.
+        """
+        if len(self.cfg.factors) != 2:
+            raise ValueError(
+                "A Tier mapping requires exactly 2 factors "
+                f"(SSI, Nonlinearity), got {len(self.cfg.factors)}."
+            )
+        tier_levels = list(self.factor_levels[self.cfg.factors[0].name])
+        level_to_idx = {t: i for i, t in enumerate(tier_levels)}
+        config_to_tier = np.zeros(self.n_configs, dtype=int)
+        for combo, k in self.factor_grid.items():
+            config_to_tier[k] = level_to_idx[str(combo[0])]
+        return tier_levels, config_to_tier, config_to_tier[self.config_idx]
+
     def subset_config_indices(self, labels: list[str] | None) -> tuple[list[str], np.ndarray]:
         """Return (ordered_labels, integer_indices) for a subset of configs.
 

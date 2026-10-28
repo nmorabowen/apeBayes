@@ -53,6 +53,21 @@ structure is modeled explicitly, and how is the residual scale handled."
   σ_GM = √(σ_run² + σ_inter² + σ²_u,ref + σ²_v,ref).
   Whether the papers adopt it is the author's decision; the v8 / v8.1
   builders and their published numbers are unchanged.
+- **v11 ("ctS")** — `CaseRecordModel(case_station=True, tier_station=True)`
+  (0.5.0). Proposed by the engstruct-2026 diagnosis (2026-10-25) and adopted
+  for both San Ramón papers (2026-10-26 / 2026-10-28). Each Case follows the
+  spectrum at its own period, so stations that differ in spectral shape give
+  every Case its own station pattern. v10 has no term for it, and on that
+  data its chains go bimodal (Student-t residual with ν ≈ 2). v11 is v10
+  plus:
+  - a Case × station effect `case_station` (SD `sigma_case_station`), and
+  - a Tier × station effect `tier_station` (SD `sigma_tier_station`),
+  both zero-sum over stations. The offsets Δμ_k and σ_GM do not contain
+  them; with a balanced design μ_k is still the equal-weight station
+  average. Either term can be used alone ("v10+cS", "v10+tS"); with both off
+  the graph is v10's. `sigma_GM(post, case=...)` gives any Case's
+  record-to-record SD from the same fit (λ_c² σ²_run + σ²_inter + σ²_u,c +
+  σ²_v,c), e.g. to read the offsets against another reference.
 
 All random-slopes builders accept `zero_sum="last"` (default, the published
 scheme) or `zero_sum="zsn"`. With `"last"`, the last level is minus the sum

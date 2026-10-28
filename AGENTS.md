@@ -3,7 +3,7 @@
 apeBayes is a PyMC library for Bayesian hierarchical quantification of epistemic
 uncertainty (the San Ramon SSI study, Papers 1 and 2). GitHub `nmorabowen/apeBayes`,
 default branch `main`. The public API is `__all__` in `src/apeBayes/__init__.py`; the
-model lineage (v1 to v10, v8.1) is the README's "Model versions". Don't restate either here.
+model lineage (v1 to v11, v8.1) is the README's "Model versions". Don't restate either here.
 
 ## Task guides: read the matching one before starting
 

@@ -281,7 +281,8 @@ def _detect_builder(post: PosteriorAccessor) -> tuple[ModelBuilder, str]:
     that builder is rebuilt with its exact options. Otherwise the variant
     is inferred from the variable set:
 
-    - ``u_case_run``     present → v10 ``CaseRecordModel``.
+    - ``u_case_run``     present → v10 ``CaseRecordModel`` (v11 when
+      ``case_station`` / ``tier_station`` are present too).
     - ``xi_case``        present → v9 ``RandomSlopesInteractionModel``
       (σ_GM raises NotImplementedError rather than silently returning
       the v8 formula).
@@ -303,7 +304,9 @@ def _detect_builder(post: PosteriorAccessor) -> tuple[ModelBuilder, str]:
         return b, model_version(b)
     zs = "zsn" if post.has_var("z_inter") or post.has_var("z_run") else "last"
     if post.has_var("u_case_run"):
-        return CaseRecordModel(), "v10"
+        b = CaseRecordModel(case_station=post.has_var("case_station"),
+                            tier_station=post.has_var("tier_station"))
+        return b, b.version
     if post.has_var("xi_case"):
         return RandomSlopesInteractionModel(interaction_loading=True, zero_sum=zs), "v9"
     if post.has_var("gamma_sr"):
@@ -313,6 +316,24 @@ def _detect_builder(post: PosteriorAccessor) -> tuple[ModelBuilder, str]:
     if post.has_var("lambda_case"):
         return RandomSlopesModel(zero_sum=zs), "v4-v7"
     return FlatConfigModel(), "v1-v3"
+
+
+def _station_term_components(post: PosteriorAccessor) -> list[tuple[str, np.ndarray]]:
+    """Variance-budget rows of the v11 station terms (realised, like Var(δ_s)).
+
+    The stations are fixed factors, so their Case- and Tier-specific
+    patterns enter as the variance of the realised terms over the
+    observations in both budget kinds. Empty for every variant without them.
+    """
+    d = post.data
+    rows: list[tuple[str, np.ndarray]] = []
+    if post.has_var("case_station"):
+        w = post.draws("case_station")[:, d.case_mapping()[2], d.station_idx]
+        rows.append(("Case×station  Var(w)", np.var(w, axis=1)))
+    if post.has_var("tier_station"):
+        kappa = post.draws("tier_station")[:, d.tier_mapping()[2], d.station_idx]
+        rows.append(("Tier×station  Var(κ)", np.var(kappa, axis=1)))
+    return rows
 
 
 class BayesEpistemicModel:
@@ -1236,6 +1257,7 @@ class BayesEpistemicModel:
                     p.draws("u_case_run")[:, c_obs, d.run_idx], axis=1)))
                 comps.append(("Case×sta×rup  Var(v)", np.var(
                     p.draws("v_case_sr")[:, c_obs, d.station_idx, d.run_idx], axis=1)))
+            comps.extend(_station_term_components(p))
             comps.append((
                 "Residual disp. Var(y−μ)",
                 np.var(d.y[None, :] - p.linear_predictor(), axis=1),
@@ -1255,6 +1277,7 @@ class BayesEpistemicModel:
             inter_loading_obs=None if xi is None else xi[:, c_obs],
             sigma_u_obs=None if su is None else su[:, c_obs],
             sigma_v_obs=None if sv is None else sv[:, c_obs],
+            extra=_station_term_components(p),
         ))
 
     def variance_component_table(

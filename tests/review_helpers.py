@@ -31,7 +31,7 @@ def crossed_config() -> ModelConfig:
     )
 
 
-def truth(seed: int = 0, *, case_terms: bool = False) -> dict:
+def truth(seed: int = 0, *, case_terms: bool = False, station_terms: bool = False) -> dict:
     rng = np.random.default_rng(seed)
     t = {
         "mu0": -2.0,
@@ -58,6 +58,13 @@ def truth(seed: int = 0, *, case_terms: bool = False) -> dict:
         v -= v.mean(2, keepdims=True)
         v -= v.mean(1, keepdims=True)
         t["v_case_sr"] = v
+    if station_terms:  # v11: zero-sum over stations, per Case and per Tier
+        t["sigma_case_station"] = 0.15
+        t["sigma_tier_station"] = 0.05
+        w = rng.normal(0, 0.15, (4, 3))
+        t["case_station"] = w - w.mean(1, keepdims=True)
+        kappa = rng.normal(0, 0.05, (4, 3))
+        t["tier_station"] = kappa - kappa.mean(1, keepdims=True)
     return t
 
 
@@ -76,6 +83,10 @@ def crossed_df(t: dict, *, noise: bool = False, seed: int = 1) -> pd.DataFrame:
                     )
                     if "u_case_run" in t:
                         y += t["u_case_run"][ci, ri] + t["v_case_sr"][ci, si, ri]
+                    if "case_station" in t:
+                        y += t["case_station"][ci, si]
+                    if "tier_station" in t:
+                        y += t["tier_station"][TIERS.index(tier), si]
                     if noise:
                         y += rng.normal(0, t["sigma_eps"][k])
                     rows.append(dict(Tier=tier, Case=case, TierCase=tier + case,
@@ -94,6 +105,7 @@ def point_mass_idata(t: dict, n_draws: int = 50, jitter: float = 0.0, seed: int 
         "sigma_eps_config": ["Config"], "sigma_u_case": ["Case"],
         "sigma_v_case": ["Case"], "u_case_run": ["Case", "Run"],
         "v_case_sr": ["Case", "Station", "Run"],
+        "case_station": ["Case", "Station"], "tier_station": ["Tier", "Station"],
     }
     names = {"sigma_eps": "sigma_eps_config"}
     post = {}
@@ -104,7 +116,7 @@ def point_mass_idata(t: dict, n_draws: int = 50, jitter: float = 0.0, seed: int 
             draws = draws + jitter * rng.standard_normal(draws.shape)
         post[names.get(key, key)] = draws
     coords = {
-        "Config": configs, "Station": STATIONS, "Run": RUPTURES, "Case": CASES,
+        "Config": configs, "Station": STATIONS, "Run": RUPTURES, "Case": CASES, "Tier": TIERS,
         "StationRun": [f"{s}|{r}" for s in STATIONS for r in RUPTURES],
     }
     return az.from_dict(

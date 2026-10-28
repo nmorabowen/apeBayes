@@ -176,6 +176,36 @@ class PosteriorAccessor:
         """Return True if the posterior carries the v10 Case×record terms."""
         return self.has_var("u_case_run")
 
+    def sigma_case_station(self) -> np.ndarray | None:
+        """(S,) Case×station SD (v11), or None."""
+        if not self.has_var("sigma_case_station"):
+            return None
+        return self.draws("sigma_case_station").ravel()
+
+    def sigma_tier_station(self) -> np.ndarray | None:
+        """(S,) Tier×station SD (v11), or None."""
+        if not self.has_var("sigma_tier_station"):
+            return None
+        return self.draws("sigma_tier_station").ravel()
+
+    @property
+    def has_station_terms(self) -> bool:
+        """Return True if the posterior carries a v11 Case×station or Tier×station term."""
+        return self.has_var("case_station") or self.has_var("tier_station")
+
+    def station_terms(self) -> np.ndarray:
+        r"""(S, N) v11 station part of the mean, :math:`w_{c s} + \kappa_{t s}`.
+
+        Zero for every variant without the terms.
+        """
+        d = self._data
+        out = np.zeros((self.n_samples, d.n_obs))
+        if self.has_var("case_station"):
+            out = out + self.draws("case_station")[:, d.case_mapping()[2], d.station_idx]
+        if self.has_var("tier_station"):
+            out = out + self.draws("tier_station")[:, d.tier_mapping()[2], d.station_idx]
+        return out
+
     # ── Linear predictor (every mean term of every variant) ──────────────
 
     def _case_idx_obs(self) -> np.ndarray | None:
@@ -242,7 +272,8 @@ class PosteriorAccessor:
         """(S, N) linear predictor per draw and observation.
 
         ``include_records=False`` returns the fixed part
-        μ₀ + μ_config[k] + δ_s only; ``True`` adds :meth:`record_term`.
+        μ₀ + μ_config[k] + δ_s (+ the v11 station terms w + κ) only;
+        ``True`` adds :meth:`record_term`.
         Uses a stored ``mu`` Deterministic when the model saved one.
         """
         d = self._data
@@ -253,6 +284,8 @@ class PosteriorAccessor:
             + self.mu_config()[:, d.config_idx]
             + self.delta_st()[:, d.station_idx]
         )
+        if self.has_station_terms:
+            fixed = fixed + self.station_terms()
         if not include_records:
             return fixed
         return fixed + self.record_term()

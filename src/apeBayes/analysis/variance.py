@@ -88,6 +88,7 @@ def variance_budget(
     inter_loading_obs: np.ndarray | None = None,
     sigma_u_obs: np.ndarray | None = None,
     sigma_v_obs: np.ndarray | None = None,
+    extra: list[tuple[str, np.ndarray]] | None = None,
 ) -> pd.DataFrame:
     r"""Posterior variance budget on a consistent per-observation footing.
 
@@ -137,6 +138,9 @@ def variance_budget(
         ξ_{c(i)} (v9).
     sigma_u_obs, sigma_v_obs : (S, N), optional
         v10 Case-level SDs per observation.
+    extra : list of (label, (S,) variance), optional
+        Further components inserted before the residual (v11: the realised
+        Case×station and Tier×station variances).
     """
     if station_idx is None:
         var_station = np.var(delta_st, axis=1, ddof=0)
@@ -168,6 +172,8 @@ def variance_budget(
         comps.append(("Case×rupture  σ²_u", np.mean(sigma_u_obs ** 2, axis=1)))
     if sigma_v_obs is not None:
         comps.append(("Case×sta×rup  σ²_v", np.mean(sigma_v_obs ** 2, axis=1)))
+    if extra:
+        comps.extend(extra)
     comps.append(("Residual disp. σ²_ε", var_eps))
     return budget_from_components(comps, ci=ci)
 

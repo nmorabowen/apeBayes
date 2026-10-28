@@ -49,9 +49,9 @@ def builder_options(builder: ModelBuilder) -> dict[str, Any]:
 
 
 def model_version(builder: ModelBuilder) -> str:
-    """Lineage label: v1-v3, v4-v7, v8, v8.1, v9 or v10 (see README)."""
+    """Lineage label: v1-v3, v4-v7, v8, v8.1, v9, v10 or v11 (see README)."""
     if isinstance(builder, CaseRecordModel):
-        return "v10"
+        return builder.version
     if isinstance(builder, RandomSlopesInteractionModel):
         o = builder.options()
         if o["interaction_loading"]:

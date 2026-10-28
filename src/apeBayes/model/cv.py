@@ -32,7 +32,10 @@ zero-sum effect is offset by the training mean).
 terms (λ_c b_r, u_cr); the new station's δ is drawn from its prior
 N(0, σ_station²) (stations are fixed effects, so this mostly tests that
 prior; with 3 stations the result is weak evidence either way), plus the
-station-specific interaction terms with :math:`f_S = 1 + 1/S`.
+station-specific interaction terms with :math:`f_S = 1 + 1/S`. v11 adds
+the new station's Case×station and Tier×station terms the same way,
+:math:`f_S[\sigma_{cs}^2 [c_i = c_j] + \sigma_{ts}^2 [t_i = t_j]]`; for a
+new rupture their realised values at the known station join the mean.
 
 The Gaussian refit is needed for the exact marginal; it is a check of the
 mean and record-covariance structure, not of the Student-t tails.
@@ -90,6 +93,8 @@ def _fold_lpd(
         d.case_mapping()[1] if len(cfg.factors) == 2 else np.zeros(d.n_configs, int)
     )
     c = config_to_case[k]
+    t = d.tier_mapping()[1][k] if post.has_var("tier_station") else None
+    s_cs, s_ts = post.sigma_case_station(), post.sigma_tier_station()
     S = post.n_samples
     idx = np.arange(S)
     if max_draws is not None and max_draws < S:
@@ -110,6 +115,10 @@ def _fold_lpd(
         same_s = (s[:, None] == s[None, :]).astype(float)
         f = 1.0 + 1.0 / d.n_runs
         mean = post.mu0()[:, None] + post.mu_config()[:, k] + post.delta_st()[:, s]
+        if s_cs is not None:
+            mean = mean + post.draws("case_station")[:, c, s]
+        if t is not None:
+            mean = mean + post.draws("tier_station")[:, t, s]
     else:  # station
         run_lbl = {lbl: i for i, lbl in enumerate(d.run_labels)}
         r = np.array([run_lbl[str(v)] for v in test[cfg.run_col]])
@@ -143,6 +152,10 @@ def _fold_lpd(
                 C = C + s_inter[sidx] ** 2 * np.outer(x, x) * same_r
             if sv is not None:
                 C = C + np.outer(sv[sidx, c], sv[sidx, c]) * same_c * same_r
+            if s_cs is not None:
+                C = C + s_cs[sidx] ** 2 * same_c
+            if t is not None and s_ts is not None:
+                C = C + s_ts[sidx] ** 2 * (t[:, None] == t[None, :])
             C = f * C + sig_st2
         C = C + np.diag(sig_eps[sidx, k] ** 2)
         lp[j] = _mvn_logpdf_chol(y - mean[sidx], C)

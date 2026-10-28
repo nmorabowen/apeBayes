@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.5.0 — 2026-10-28 (on `main`, not pushed)
+
+**v11 ("ctS").** `CaseRecordModel` takes `case_station` and `tier_station`
+(default False). With both on it adds a Case × station and a Tier × station
+term, each a HalfNormal(0.3) scale (`sigma_cs`, `sigma_ts`) times a
+`ZeroSumNormal` over stations. Proposed by the engstruct-2026 diagnosis and
+adopted for both San Ramón papers. **With both flags off the v10 graph is
+unchanged**: a test pins its free variables and log-density to the 0.4.0
+values, and a v10 builder writes the 0.4.0 spec (no station keys).
+
+### Added
+
+- `EpistemicDataset.tier_mapping()`, the Tier counterpart of `case_mapping()`.
+- `CaseRecordModel.version` ("v10", "v11", "v10+cS", "v10+tS"); `model_version`
+  and the builder description use it.
+- `CaseRecordModel.sigma_GM(post, case=...)`: the record-to-record SD of any
+  Case from the same fit, √(λ_c² σ²_run + σ²_inter + σ²_u,c + σ²_v,c). The
+  default (`case=None`, the reference Case) is the v10 formula.
+- `PosteriorAccessor.sigma_case_station()`, `sigma_tier_station()`,
+  `has_station_terms`, `station_terms()`.
+
+### Changed
+
+- `PosteriorAccessor.linear_predictor` adds the station terms to the fixed
+  part (μ₀ + μ_k + δ_s + w + κ), so R², fitted values, residuals and the
+  finite variance budget see them. Nothing changes for v1–v10 posteriors.
+- Variance budget (both kinds): rows `Case×station  Var(w)` and
+  `Tier×station  Var(κ)`, the variance of the realised terms over the
+  observations (stations are fixed, as for `Var(δ_s)`).
+  `analysis.variance.variance_budget` takes `extra=` for such rows.
+- Leave-one-group-out CV: for a new rupture the mean adds the realised w + κ
+  at the known station; for a new station the covariance adds
+  f_S(σ²_cs [c_i = c_j] + σ²_ts [t_i = t_j]).
+- Builder detection from variable names returns the v11 builder when
+  `case_station` / `tier_station` are present.
+
+Checked by hand:
+- the station-terms-off graph against the 0.4.0 source (identical free
+  variables, log-density −1070.472839872557);
+- the v11 graph against the two copies it replaces, the engstruct-2026
+  diagnosis's `CaseRecordDiag` and Paper 2's `CaseRecordStation`: identical
+  free variables in the same order and identical log-density, so the same
+  seed gives the same posterior.
+
+Not checked: loading the six Paper 1 v10 bundles and reproducing their β
+(that path is unchanged).
+
 ## 0.4.0 — 2026-10-19 (branch `feature/review-2026-10-19`, not released)
 
 Fixes and additions from three independent reviews of 0.3.2 (code, statistics,
